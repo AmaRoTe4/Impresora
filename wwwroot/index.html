@@ -1,0 +1,48 @@
+
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>PrintAgent Config</title>
+<style>
+body{font-family:Arial,Helvetica,sans-serif;margin:2rem;}
+button{margin-top:1rem;}
+</style>
+</head>
+<body>
+<h2>Configuración de PrintAgent</h2>
+<div>
+  <label>Impresora preferida:</label>
+  <select id="printers"></select>
+  <button onclick="save()">Guardar</button>
+</div>
+<div style="margin-top:2rem;">
+  <textarea id="text" rows="6" cols="60" placeholder="Texto a imprimir..."></textarea><br>
+  <button onclick="test()">Imprimir prueba</button>
+</div>
+<script>
+async function load(){
+  const data = await fetch('/printers').then(r=>r.json());
+  const sel = document.getElementById('printers');
+  sel.innerHTML='';
+  data.printers.forEach(p=>{
+    const opt=document.createElement('option');
+    opt.value=p; opt.text=p;
+    if(p===data.preferredPrinter) opt.selected=true;
+    sel.appendChild(opt);
+  });
+}
+async function save(){
+  const printer=document.getElementById('printers').value;
+  await fetch('/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({printer})});
+  alert('Guardado');
+}
+async function test(){
+  const content=document.getElementById('text').value||'Test Print';
+  await fetch('/print',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({content})});
+  alert('Enviado a cola');
+}
+load();
+</script>
+</body>
+</html>
