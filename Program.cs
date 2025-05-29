@@ -15,8 +15,9 @@ namespace PrintAgent
             var logger  = new Logger();
             var manager = new PrinterManager(logger);
             Task.Run(() => PrintWorker(manager, logger));
+
             var server = new HttpServer(manager, _queue, logger);
-            logger.Info("PrintAgent v2 iniciado en http://localhost:5000");
+            logger.Info("PrintAgent iniciado en http://localhost:5000");
             await server.StartAsync();
         }
 
@@ -35,19 +36,16 @@ namespace PrintAgent
                             mgr.PrintZpl(job.Payload);
                             break;
                     }
-                    logger.Info($"Job {job.Kind} impreso con éxito.");
+                    logger.Info($"Job {job.Kind} impreso.");
                 }
                 catch (Exception ex)
                 {
-                    logger.Error($"Error imprimiendo {job.Kind}: " + ex.Message);
+                    logger.Error($"Error imprimiendo {job.Kind}: {ex.Message}");
                 }
             }
         }
     }
-}
 
-namespace PrintAgent
-{
     public record PrintJob(JobKind Kind, string Payload);
     public enum JobKind { Text, Zpl }
 }

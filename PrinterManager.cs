@@ -33,7 +33,7 @@ namespace PrintAgent
         public void SetPreferredPrinter(string printerName)
         {
             if (!GetInstalledPrinters().Contains(printerName))
-                throw new ArgumentException($"Printer '{printerName}' not found.");
+                throw new ArgumentException($"Printer '{printerName}' no encontrada.");
             _preferredPrinter = printerName;
             SaveConfig();
             _logger.Info($"Impresora preferida: {_preferredPrinter}");
@@ -41,7 +41,6 @@ namespace PrintAgent
 
         public string GetPreferredPrinter() => _preferredPrinter ?? GetDefaultPrinter();
 
-        // TEXT
         public void PrintText(string text)
         {
             var doc = new PrintDocument();
@@ -54,7 +53,6 @@ namespace PrintAgent
             doc.Print();
         }
 
-        // ZPL RAW
         public void PrintZpl(string zpl)
         {
             var bytes = Encoding.UTF8.GetBytes(zpl);
@@ -70,7 +68,10 @@ namespace PrintAgent
                 if (json.RootElement.TryGetProperty("preferredPrinter", out var el))
                     _preferredPrinter = el.GetString();
             }
-            catch (Exception ex) { _logger.Error("No se pudo leer config: " + ex.Message); }
+            catch (Exception ex)
+            {
+                _logger.Error("No se pudo leer config: " + ex.Message);
+            }
         }
 
         private void SaveConfig()
@@ -80,7 +81,10 @@ namespace PrintAgent
                 var json = JsonSerializer.Serialize(new { preferredPrinter = _preferredPrinter });
                 File.WriteAllText(_configPath, json);
             }
-            catch (Exception ex) { _logger.Error("No se pudo guardar config: " + ex.Message); }
+            catch (Exception ex)
+            {
+                _logger.Error("No se pudo guardar config: " + ex.Message);
+            }
         }
     }
 
@@ -88,60 +92,18 @@ namespace PrintAgent
     {
         [DllImport("winspool.Drv", SetLastError = true, CharSet = CharSet.Auto)]
         private static extern bool OpenPrinter(string pPrinterName, out IntPtr phPrinter, IntPtr pDefault);
-
         [DllImport("winspool.Drv", SetLastError = true)]
         private static extern bool ClosePrinter(IntPtr hPrinter);
-
         [DllImport("winspool.Drv", SetLastError = true)]
         private static extern bool StartDocPrinter(IntPtr hPrinter, int level, IntPtr pDocInfo);
-
         [DllImport("winspool.Drv", SetLastError = true)]
         private static extern bool EndDocPrinter(IntPtr hPrinter);
-
         [DllImport("winspool.Drv", SetLastError = true)]
         private static extern bool StartPagePrinter(IntPtr hPrinter);
-
         [DllImport("winspool.Drv", SetLastError = true)]
         private static extern bool EndPagePrinter(IntPtr hPrinter);
-
         [DllImport("winspool.Drv", SetLastError = true)]
         private static extern bool WritePrinter(IntPtr hPrinter, IntPtr pBytes, int dwCount, out int dwWritten);
-
-        public static void SendBytesToPrinter(string printerName, byte[] bytes)
-        {
-            IntPtr hPrinter;
-            if (!OpenPrinter(printerName, out hPrinter, IntPtr.Zero))
-                throw new InvalidOperationException("No se puede abrir impresora.");
-
-            try
-            {
-                DOCINFOA docInfo = new DOCINFOA { pDocName = "ZPLJob", pDataType = "RAW" };
-                IntPtr pDocInfo = Marshal.AllocHGlobal(Marshal.SizeOf(docInfo));
-                Marshal.StructureToPtr(docInfo, pDocInfo, false);
-
-                if (!StartDocPrinter(hPrinter, 1, pDocInfo))
-                    throw new InvalidOperationException("StartDocPrinter falló.");
-
-                if (!StartPagePrinter(hPrinter))
-                    throw new InvalidOperationException("StartPagePrinter falló.");
-
-                IntPtr unmanagedBytes = Marshal.AllocHGlobal(bytes.Length);
-                Marshal.Copy(bytes, 0, unmanagedBytes, bytes.Length);
-
-                int written;
-                if (!WritePrinter(hPrinter, unmanagedBytes, bytes.Length, out written))
-                    throw new InvalidOperationException("WritePrinter falló.");
-
-                EndPagePrinter(hPrinter);
-                EndDocPrinter(hPrinter);
-                Marshal.FreeHGlobal(unmanagedBytes);
-                Marshal.FreeHGlobal(pDocInfo);
-            }
-            finally
-            {
-                ClosePrinter(hPrinter);
-            }
-        }
 
         [StructLayout(LayoutKind.Sequential)]
         private struct DOCINFOA
@@ -149,6 +111,38 @@ namespace PrintAgent
             [MarshalAs(UnmanagedType.LPStr)] public string pDocName;
             [MarshalAs(UnmanagedType.LPStr)] public string pOutputFile;
             [MarshalAs(UnmanagedType.LPStr)] public string pDataType;
+        }
+
+        public static void SendBytesToPrinter(string printerName, byte[] bytes)
+        {
+            if (!OpenPrinter(printerName, out var hPrinter, IntPtr.Zero))
+                throw new InvalidOperationException("No se pudo abrir la impresora.");
+
+            try
+            {
+                var docInfo = new DOCINFOA { pDocName = "RAW ZPL", pDataType = "RAW" };
+                IntPtr pDocInfo = Marshal.AllocHGlobal(Marshal.SizeOf(docInfo));
+                Marshal.StructureToPtr(docInfo, pDocInfo, false);
+
+                if (!StartDocPrinter(hPrinter, 1, pDocInfo)) throw new InvalidOperationException("StartDocPrinter falló.");
+                if (!StartPagePrinter(hPrinter)) throw new InvalidOperationException("StartPagePrinter falló.");
+
+                IntPtr unmanagedBytes = Marshal.AllocHGlobal(bytes.Length);
+                Marshal.Copy(bytes, 0, unmanagedBytes, bytes.Length);
+
+                if (!WritePrinter(hPrinter, unmanagedBytes, bytes.Length, out _))
+                    throw new InvalidOperationException("WritePrinter falló.");
+
+                EndPagePrinter(hPrinter);
+                EndDocPrinter(hPrinter);
+
+                Marshal.FreeHGlobal(unmanagedBytes);
+                Marshal.FreeHGlobal(pDocInfo);
+            }
+            finally
+            {
+                ClosePrinter(hPrinter);
+            }
         }
     }
 }
