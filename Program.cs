@@ -7,20 +7,16 @@ namespace PrintAgent
 {
     internal static class Program
     {
-        private static readonly BlockingCollection<string> _queue = new BlockingCollection<string>();
+        private static readonly BlockingCollection<PrintJob> _queue = new BlockingCollection<PrintJob>();
 
         [STAThread]
         static async Task Main(string[] args)
         {
             var logger  = new Logger();
             var manager = new PrinterManager(logger);
-
-            // Worker que serializa impresiones
             Task.Run(() => PrintWorker(manager, logger));
-
             var server = new HttpServer(manager, _queue, logger);
-            logger.Info("PrintAgent iniciado en http://localhost:5000");
-
+            logger.Info("PrintAgent v2 iniciado en http://localhost:5000");
             await server.StartAsync();
         }
 
@@ -30,14 +26,28 @@ namespace PrintAgent
             {
                 try
                 {
-                    mgr.PrintText(job);
-                    logger.Info($"Impresión exitosa ({job.Length} chars) en '{mgr.GetPreferredPrinter()}'.");
+                    switch (job.Kind)
+                    {
+                        case JobKind.Text:
+                            mgr.PrintText(job.Payload);
+                            break;
+                        case JobKind.Zpl:
+                            mgr.PrintZpl(job.Payload);
+                            break;
+                    }
+                    logger.Info($"Job {job.Kind} impreso con éxito.");
                 }
                 catch (Exception ex)
                 {
-                    logger.Error("Error imprimiendo: " + ex.Message);
+                    logger.Error($"Error imprimiendo {job.Kind}: " + ex.Message);
                 }
             }
         }
     }
+}
+
+namespace PrintAgent
+{
+    public record PrintJob(JobKind Kind, string Payload);
+    public enum JobKind { Text, Zpl }
 }

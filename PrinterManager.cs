@@ -4,6 +4,8 @@ using System.Collections.Generic;
 using System.Drawing.Printing;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
+using System.Text;
 using System.Text.Json;
 
 namespace PrintAgent
@@ -23,29 +25,23 @@ namespace PrintAgent
             LoadConfig();
         }
 
-        public IReadOnlyList<string> GetInstalledPrinters()
-        {
-            return PrinterSettings.InstalledPrinters.Cast<string>().ToList();
-        }
+        public IReadOnlyList<string> GetInstalledPrinters() =>
+            PrinterSettings.InstalledPrinters.Cast<string>().ToList();
 
-        public string GetDefaultPrinter()
-        {
-            var settings = new PrinterSettings();
-            return settings.PrinterName;
-        }
+        public string GetDefaultPrinter() => new PrinterSettings().PrinterName;
 
         public void SetPreferredPrinter(string printerName)
         {
             if (!GetInstalledPrinters().Contains(printerName))
                 throw new ArgumentException($"Printer '{printerName}' not found.");
-
             _preferredPrinter = printerName;
             SaveConfig();
-            _logger.Info($"Impresora preferida establecida: {_preferredPrinter}");
+            _logger.Info($"Impresora preferida: {_preferredPrinter}");
         }
 
         public string GetPreferredPrinter() => _preferredPrinter ?? GetDefaultPrinter();
 
+        // TEXT
         public void PrintText(string text)
         {
             var doc = new PrintDocument();
@@ -58,6 +54,13 @@ namespace PrintAgent
             doc.Print();
         }
 
+        // ZPL RAW
+        public void PrintZpl(string zpl)
+        {
+            var bytes = Encoding.UTF8.GetBytes(zpl);
+            RawPrinterHelper.SendBytesToPrinter(GetPreferredPrinter(), bytes);
+        }
+
         private void LoadConfig()
         {
             if (!File.Exists(_configPath)) return;
@@ -67,10 +70,7 @@ namespace PrintAgent
                 if (json.RootElement.TryGetProperty("preferredPrinter", out var el))
                     _preferredPrinter = el.GetString();
             }
-            catch (Exception ex)
-            {
-                _logger.Error("No se pudo leer config: " + ex.Message);
-            }
+            catch (Exception ex) { _logger.Error("No se pudo leer config: " + ex.Message); }
         }
 
         private void SaveConfig()
@@ -80,10 +80,75 @@ namespace PrintAgent
                 var json = JsonSerializer.Serialize(new { preferredPrinter = _preferredPrinter });
                 File.WriteAllText(_configPath, json);
             }
-            catch (Exception ex)
+            catch (Exception ex) { _logger.Error("No se pudo guardar config: " + ex.Message); }
+        }
+    }
+
+    internal static class RawPrinterHelper
+    {
+        [DllImport("winspool.Drv", SetLastError = true, CharSet = CharSet.Auto)]
+        private static extern bool OpenPrinter(string pPrinterName, out IntPtr phPrinter, IntPtr pDefault);
+
+        [DllImport("winspool.Drv", SetLastError = true)]
+        private static extern bool ClosePrinter(IntPtr hPrinter);
+
+        [DllImport("winspool.Drv", SetLastError = true)]
+        private static extern bool StartDocPrinter(IntPtr hPrinter, int level, IntPtr pDocInfo);
+
+        [DllImport("winspool.Drv", SetLastError = true)]
+        private static extern bool EndDocPrinter(IntPtr hPrinter);
+
+        [DllImport("winspool.Drv", SetLastError = true)]
+        private static extern bool StartPagePrinter(IntPtr hPrinter);
+
+        [DllImport("winspool.Drv", SetLastError = true)]
+        private static extern bool EndPagePrinter(IntPtr hPrinter);
+
+        [DllImport("winspool.Drv", SetLastError = true)]
+        private static extern bool WritePrinter(IntPtr hPrinter, IntPtr pBytes, int dwCount, out int dwWritten);
+
+        public static void SendBytesToPrinter(string printerName, byte[] bytes)
+        {
+            IntPtr hPrinter;
+            if (!OpenPrinter(printerName, out hPrinter, IntPtr.Zero))
+                throw new InvalidOperationException("No se puede abrir impresora.");
+
+            try
             {
-                _logger.Error("No se pudo guardar config: " + ex.Message);
+                DOCINFOA docInfo = new DOCINFOA { pDocName = "ZPLJob", pDataType = "RAW" };
+                IntPtr pDocInfo = Marshal.AllocHGlobal(Marshal.SizeOf(docInfo));
+                Marshal.StructureToPtr(docInfo, pDocInfo, false);
+
+                if (!StartDocPrinter(hPrinter, 1, pDocInfo))
+                    throw new InvalidOperationException("StartDocPrinter falló.");
+
+                if (!StartPagePrinter(hPrinter))
+                    throw new InvalidOperationException("StartPagePrinter falló.");
+
+                IntPtr unmanagedBytes = Marshal.AllocHGlobal(bytes.Length);
+                Marshal.Copy(bytes, 0, unmanagedBytes, bytes.Length);
+
+                int written;
+                if (!WritePrinter(hPrinter, unmanagedBytes, bytes.Length, out written))
+                    throw new InvalidOperationException("WritePrinter falló.");
+
+                EndPagePrinter(hPrinter);
+                EndDocPrinter(hPrinter);
+                Marshal.FreeHGlobal(unmanagedBytes);
+                Marshal.FreeHGlobal(pDocInfo);
             }
+            finally
+            {
+                ClosePrinter(hPrinter);
+            }
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct DOCINFOA
+        {
+            [MarshalAs(UnmanagedType.LPStr)] public string pDocName;
+            [MarshalAs(UnmanagedType.LPStr)] public string pOutputFile;
+            [MarshalAs(UnmanagedType.LPStr)] public string pDataType;
         }
     }
 }
