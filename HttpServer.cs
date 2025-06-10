@@ -103,9 +103,11 @@ namespace PrintAgent
 
                             sb.Append("^XA")
                             .Append("^PW400^LH0,0")
-                            .Append("^BY2,2,50^FO30,20^BCN,50,Y,N,N^FD").Append(codigo).Append("^FS")
-                            .Append("^FO30,100^A0,20,20^FD").Append(nombre).Append("^FS")
+                            .Append("^FO30,20^A0N,30,30^FD").Append(nombre).Append("^FS") // nombre arriba
+                            .Append("^BY2,2,60^FO30,70^BCN,100,Y,N,N^FD").Append(codigo).Append("^FS") // barcode en medio
+                            .Append("^FO30,180^A0N,25,25^FD").Append(codigo).Append("^FS") // texto del código debajo
                             .Append("^XZ\r\n");
+
                         }
 
                         _queue.Add(new PrintJob(JobKind.Zpl, sb.ToString()));
