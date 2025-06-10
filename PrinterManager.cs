@@ -55,9 +55,11 @@ namespace PrintAgent
 
         public void PrintZpl(string zpl)
         {
+            if (!zpl.EndsWith("\r\n")) zpl += "\r\n";
             var bytes = Encoding.UTF8.GetBytes(zpl);
             RawPrinterHelper.SendBytesToPrinter(GetPreferredPrinter(), bytes);
         }
+
 
         private void LoadConfig()
         {

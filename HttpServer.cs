@@ -84,18 +84,49 @@ namespace PrintAgent
                     using var sr = new System.IO.StreamReader(req.InputStream, req.ContentEncoding);
                     var body = await sr.ReadToEndAsync();
                     var json = JsonDocument.Parse(body);
-                    string field = isZpl ? "zpl" : "content";
-                    if (!json.RootElement.TryGetProperty(field, out var dataEl))
+
+                    if (isZpl)
                     {
-                        res.StatusCode = 400;
-                        await Write(res, new { error = $"Falta campo '{field}'" });
-                        return;
+                        if (!json.RootElement.TryGetProperty("valores", out var arr) ||
+                            arr.ValueKind != JsonValueKind.Array || arr.GetArrayLength() == 0)
+                        {
+                            res.StatusCode = 400;
+                            await Write(res, new { error = "Falta arreglo 'valores' con nombre y codigo_barra" });
+                            return;
+                        }
+
+                        var sb = new StringBuilder();
+                        foreach (var item in arr.EnumerateArray())
+                        {
+                            var nombre = item.GetProperty("nombre").GetString() ?? "";
+                            var codigo = item.GetProperty("codigo_barra").GetString() ?? "";
+
+                            sb.Append("^XA")
+                            .Append("^PW400^LH0,0")
+                            .Append("^BY2,2,50^FO30,20^BCN,50,Y,N,N^FD").Append(codigo).Append("^FS")
+                            .Append("^FO30,100^A0,20,20^FD").Append(nombre).Append("^FS")
+                            .Append("^XZ\r\n");
+                        }
+
+                        _queue.Add(new PrintJob(JobKind.Zpl, sb.ToString()));
                     }
-                    var payload = dataEl.GetString() ?? "";
-                    _queue.Add(new PrintJob(isZpl ? JobKind.Zpl : JobKind.Text, payload));
+                    else
+                    {
+                        if (!json.RootElement.TryGetProperty("content", out var dataEl))
+                        {
+                            res.StatusCode = 400;
+                            await Write(res, new { error = "Falta campo 'content'" });
+                            return;
+                        }
+
+                        var payload = dataEl.GetString() ?? "";
+                        _queue.Add(new PrintJob(JobKind.Text, payload));
+                    }
+
                     await Write(res, new { status = "queued" });
                     return;
                 }
+
 
                 res.StatusCode = 404;
                 await Write(res, new { error = "not-found" });
