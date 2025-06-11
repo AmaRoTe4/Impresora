@@ -115,10 +115,10 @@ namespace PrintAgent
                     }
                     else
                     {
-                        if (!json.RootElement.TryGetProperty("content", out var dataEl))
+                        if (!json.RootElement.TryGetProperty("text", out var dataEl))
                         {
                             res.StatusCode = 400;
-                            await Write(res, new { error = "Falta campo 'content'" });
+                            await Write(res, new { error = "Falta campo 'text'" });
                             return;
                         }
 
