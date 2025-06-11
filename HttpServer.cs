@@ -102,11 +102,10 @@ namespace PrintAgent
                             var codigo = item.GetProperty("codigo_barra").GetString() ?? "";
 
                             sb.Append("^XA")
-                            .Append("^PW400^LH0,0")  // 400px de ancho (≈50mm)
-                            .Append("^FO10,10^BY3,2,40^BCN,40,Y,N,N^FD").Append(codigo).Append("^FS") // Barcode bajo y angosto
-                            .Append("^FO10,60^A0N,20,20^FB380,1,0,C,0^FD").Append(codigo).Append("^FS") // Texto centrado con margen horizontal
-                            .Append("^FO10,90^A0N,18,18^FD").Append(nombre).Append("^FS") // Nombre justificado a la izquierda
-                            .Append("^XZ\r\n");
+                            .Append("^PW400^LH0,0")  
+                            .Append("^BY2,2,50^FO30,20^BCN,50,Y,N,N^FD").Append(codigo).Append("^FS") 
+                            .Append("^FO30,100^A0,20,20^FD").Append(nombre).Append("^FS") 
+                            .Append("^XZ");
 
 
                         }
