@@ -5,6 +5,7 @@ using System.Net;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
+using System.Drawing.Printing;
 
 namespace PrintAgent
 {
@@ -34,6 +35,85 @@ namespace PrintAgent
                 _ = Task.Run(() => Handle(ctx));
             }
         }
+
+        private void SendCutCommand()
+        {
+            // Comando de corte: GS V A 0
+            byte[] cut = new byte[] { 0x1D, 0x56, 0x41, 0x00 };
+            string printer = new PrintDocument().PrinterSettings.PrinterName;
+
+            RawPrinterHelper.SendBytesToPrinter(printer, cut);
+        }
+
+
+        private async Task HandlePrintWithQR(HttpListenerRequest req, HttpListenerResponse res)
+        {
+            using var sr = new StreamReader(req.InputStream, req.ContentEncoding);
+            var body = await sr.ReadToEndAsync();
+            var json = JsonDocument.Parse(body);
+
+            if (!json.RootElement.TryGetProperty("text_1", out var text1El) ||
+                !json.RootElement.TryGetProperty("text_2", out var text2El) ||
+                !json.RootElement.TryGetProperty("qr_base64", out var qrEl))
+            {
+                res.StatusCode = 400;
+                await Write(res, new { error = "Faltan campos: text_1, text_2 o qr_base64" });
+                return;
+            }
+
+            string text1 = text1El.GetString() ?? "";
+            string text2 = text2El.GetString() ?? "";
+            string qrBase64 = qrEl.GetString() ?? "";
+
+            // Decodificamos el QR
+            byte[] qrBytes;
+            try
+            {
+                qrBytes = Convert.FromBase64String(qrBase64);
+            }
+            catch
+            {
+                res.StatusCode = 400;
+                await Write(res, new { error = "QR inválido: no es base64 válido" });
+                return;
+            }
+
+            using var qrStream = new MemoryStream(qrBytes);
+            using var qrImage = Image.FromStream(qrStream);
+
+            // Creamos el documento de impresión
+            var pd = new PrintDocument();
+            pd.PrintPage += (sender, e) =>
+            {
+                var g = e.Graphics;
+                var font = new Font("Arial", 10);
+
+                float y = 0;
+                g.DrawString(text1, font, Brushes.Black, 0, y);
+                y += 40;
+
+                // Imagen QR centrada
+                int qrWidth = 150;
+                int qrX = (int)((e.PageBounds.Width - qrWidth) / 2);
+                g.DrawImage(qrImage, new Rectangle(qrX, (int)y, qrWidth, qrWidth));
+                y += qrWidth + 20;
+
+                g.DrawString(text2, font, Brushes.Black, 0, y);
+            };
+
+            try
+            {
+                pd.Print(); // O pd.PrinterSettings.PrinterName = ...
+                SendCutCommand();
+                await Write(res, new { status = "printed" });
+            }
+            catch (Exception ex)
+            {
+                res.StatusCode = 500;
+                await Write(res, new { error = "Error al imprimir: " + ex.Message });
+            }
+        }
+
 
         private async Task Handle(HttpListenerContext ctx)
         {
@@ -78,8 +158,10 @@ namespace PrintAgent
 
                 bool isText = req.Url.AbsolutePath is "/print" or "/print_text";
                 bool isZpl  = req.Url.AbsolutePath == "/print_zpl";
+                bool isQR  = req.Url.AbsolutePath == "/print_qr";
 
-                if (req.HttpMethod == "POST" && (isText || isZpl))
+
+                if (req.HttpMethod == "POST" && (isText || isZpl || isQR))
                 {
                     using var sr = new System.IO.StreamReader(req.InputStream, req.ContentEncoding);
                     var body = await sr.ReadToEndAsync();
@@ -112,7 +194,12 @@ namespace PrintAgent
 
                         _queue.Add(new PrintJob(JobKind.Zpl, sb.ToString()));
                     }
-                    else
+                    if (isQR)
+                    {
+                        await HandlePrintWithQR(req, res);
+                        return;
+                    }
+                    if(isText)
                     {
                         if (!json.RootElement.TryGetProperty("text", out var dataEl))
                         {
