@@ -217,6 +217,7 @@ namespace PrintAgent
 
                         var payload = dataEl.GetString() ?? "";
                         _queue.Add(new PrintJob(JobKind.Text, payload));
+                        SendCutCommand();
                     }
 
                     await Write(res, new { status = "queued" });
