@@ -46,11 +46,19 @@ namespace PrintAgent
         }
 
 
-        private async Task HandlePrintWithQR(HttpListenerRequest req, HttpListenerResponse res)
+        private async Task HandlePrintWithQR(string body, HttpListenerResponse res)
         {
-            using var sr = new StreamReader(req.InputStream, req.ContentEncoding);
-            var body = await sr.ReadToEndAsync();
-            var json = JsonDocument.Parse(body);
+            JsonDocument json;
+            try
+            {
+                json = JsonDocument.Parse(body);
+            }
+            catch
+            {
+                res.StatusCode = 400;
+                await Write(res, new { error = "El cuerpo no es JSON válido." });
+                return;
+            }
 
             if (!json.RootElement.TryGetProperty("text_1", out var text1El) ||
                 !json.RootElement.TryGetProperty("text_2", out var text2El) ||
@@ -65,7 +73,7 @@ namespace PrintAgent
             string text2 = text2El.GetString() ?? "";
             string qrBase64 = qrEl.GetString() ?? "";
 
-            // Decodificamos el QR
+            // Decodificar QR base64
             byte[] qrBytes;
             try
             {
@@ -74,14 +82,14 @@ namespace PrintAgent
             catch
             {
                 res.StatusCode = 400;
-                await Write(res, new { error = "QR inválido: no es base64 válido" });
+                await Write(res, new { error = "QR inválido: base64 no válido" });
                 return;
             }
 
             using var qrStream = new MemoryStream(qrBytes);
             using var qrImage = Image.FromStream(qrStream);
 
-            // Creamos el documento de impresión
+            // Imprimir
             var pd = new PrintDocument();
             pd.PrintPage += (sender, e) =>
             {
@@ -92,7 +100,6 @@ namespace PrintAgent
                 g.DrawString(text1, font, Brushes.Black, 0, y);
                 y += 40;
 
-                // Imagen QR centrada
                 int qrWidth = 150;
                 int qrX = (int)((e.PageBounds.Width - qrWidth) / 2);
                 g.DrawImage(qrImage, new Rectangle(qrX, (int)y, qrWidth, qrWidth));
@@ -103,7 +110,7 @@ namespace PrintAgent
 
             try
             {
-                pd.Print(); // O pd.PrinterSettings.PrinterName = ...
+                pd.Print();
                 SendCutCommand();
                 await Write(res, new { status = "printed" });
             }
@@ -113,7 +120,6 @@ namespace PrintAgent
                 await Write(res, new { error = "Error al imprimir: " + ex.Message });
             }
         }
-
 
         private async Task Handle(HttpListenerContext ctx)
         {
@@ -196,7 +202,9 @@ namespace PrintAgent
                     }
                     if (isQR)
                     {
-                        await HandlePrintWithQR(req, res);
+                        using var sr = new StreamReader(req.InputStream, req.ContentEncoding);
+                        var body = await sr.ReadToEndAsync();
+                        await HandlePrintWithQR(body, res);
                         return;
                     }
                     if(isText)
