@@ -169,8 +169,15 @@ namespace PrintAgent
 
                 if (req.HttpMethod == "POST" && (isText || isZpl || isQR))
                 {
-                    using var sr = new System.IO.StreamReader(req.InputStream, req.ContentEncoding);
+                    using var sr = new StreamReader(req.InputStream, req.ContentEncoding);
                     var body = await sr.ReadToEndAsync();
+
+                    if (isQR)
+                    {
+                        await HandlePrintWithQR(body, res);
+                        return;
+                    }
+
                     var json = JsonDocument.Parse(body);
 
                     if (isZpl)
@@ -190,24 +197,16 @@ namespace PrintAgent
                             var codigo = item.GetProperty("codigo_barra").GetString() ?? "";
 
                             sb.Append("^XA")
-                            .Append("^PW400^LH0,0")  
-                            .Append("^BY2,2,50^FO30,20^BCN,50,Y,N,N^FD").Append(codigo).Append("^FS") 
-                            .Append("^FO30,100^A0,20,20^FD").Append(nombre).Append("^FS") 
+                            .Append("^PW400^LH0,0")
+                            .Append("^BY2,2,50^FO30,20^BCN,50,Y,N,N^FD").Append(codigo).Append("^FS")
+                            .Append("^FO30,100^A0,20,20^FD").Append(nombre).Append("^FS")
                             .Append("^XZ");
-
-
                         }
 
                         _queue.Add(new PrintJob(JobKind.Zpl, sb.ToString()));
                     }
-                    if (isQR)
-                    {
-                        using var sr = new StreamReader(req.InputStream, req.ContentEncoding);
-                        var body = await sr.ReadToEndAsync();
-                        await HandlePrintWithQR(body, res);
-                        return;
-                    }
-                    if(isText)
+
+                    if (isText)
                     {
                         if (!json.RootElement.TryGetProperty("text", out var dataEl))
                         {
@@ -223,7 +222,6 @@ namespace PrintAgent
                     await Write(res, new { status = "queued" });
                     return;
                 }
-
 
                 res.StatusCode = 404;
                 await Write(res, new { error = "not-found" });
