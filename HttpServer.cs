@@ -95,18 +95,24 @@ namespace PrintAgent
             {
                 var g = e.Graphics;
                 var font = new Font("Arial", 10);
-
+                float marginLeft = 0;
                 float y = 0;
-                g.DrawString(text1, font, Brushes.Black, 0, y);
-                y += 40;
 
+                // Medir y dibujar texto1
+                var text1Size = g.MeasureString(text1, font);
+                g.DrawString(text1, font, Brushes.Black, marginLeft, y);
+                y += text1Size.Height + 10;
+
+                // Dibujar imagen QR
                 int qrWidth = 150;
                 int qrX = (int)((e.PageBounds.Width - qrWidth) / 2);
                 g.DrawImage(qrImage, new Rectangle(qrX, (int)y, qrWidth, qrWidth));
-                y += qrWidth + 20;
+                y += qrWidth + 10;
 
-                g.DrawString(text2, font, Brushes.Black, 0, y);
+                // Medir y dibujar texto2
+                g.DrawString(text2, font, Brushes.Black, marginLeft, y);
             };
+
 
             try
             {
