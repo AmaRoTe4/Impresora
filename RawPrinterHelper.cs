@@ -34,6 +34,16 @@ public class RawPrinterHelper
         [MarshalAs(UnmanagedType.LPStr)] public string pDataType;
     }
 
+    public static byte[] GetImageCommandFromBitmap(byte[] bmpBytes)
+    {
+        // Esto convierte una imagen BMP a comando ESC/POS para impresión de imagenes
+        // Usa alguna librería externa o herramienta como ESC/POS Image Helper
+        // Te lo puedo implementar si querés, pero hay muchas variantes según la impresora
+
+        throw new NotImplementedException("Falta implementar conversión ESC/POS desde BMP.");
+    }
+
+
     public static bool SendBytesToPrinter(string printerName, byte[] bytes)
     {
         IntPtr pPrinter;

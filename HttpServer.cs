@@ -77,39 +77,28 @@ namespace PrintAgent
                 return;
             }
 
-            using var qrStream = new MemoryStream(qrBytes);
-            using var qrImage = Image.FromStream(qrStream);
-
-            var pd = new PrintDocument();
-            pd.PrintPage += (sender, e) =>
-            {
-                var g = e.Graphics;
-                var font = new Font("Arial", 10);
-                float marginLeft = 10;
-                float y = 10;
-                float maxWidth = e.PageBounds.Width - 2 * marginLeft;
-
-                // Text 1
-                var rectText1 = new RectangleF(marginLeft, y, maxWidth, e.PageBounds.Height);
-                var sizeText1 = g.MeasureString(text1, font, (int)maxWidth);
-                g.DrawString(text1, font, Brushes.Black, rectText1);
-                y += sizeText1.Height + 10;
-
-                // QR
-                int qrSize = 150;
-                int qrX = (int)((e.PageBounds.Width - qrSize) / 2);
-                g.DrawImage(qrImage, new Rectangle(qrX, (int)y, qrSize, qrSize));
-                y += qrSize + 10;
-
-                // Text 2
-                var rectText2 = new RectangleF(marginLeft, y, maxWidth, e.PageBounds.Height - y);
-                g.DrawString(text2, font, Brushes.Black, rectText2);
-            };
-
             try
             {
-                pd.Print();
-                SendCutCommand();
+                using var qrStream = new MemoryStream(qrBytes);
+                using var qrImage = Image.FromStream(qrStream);
+
+                // Convertimos la imagen QR a formato ESC/POS compatible (monocromo BMP)
+                using var ms = new MemoryStream();
+                qrImage.Save(ms, System.Drawing.Imaging.ImageFormat.Bmp);
+                var bmpBytes = ms.ToArray();
+
+                // Armamos todo el bloque a enviar al printer
+                var finalBuilder = new List<byte>();
+                finalBuilder.AddRange(Encoding.UTF8.GetBytes(text1 + "\n\n"));
+
+                finalBuilder.AddRange(RawPrinterHelper.GetImageCommandFromBitmap(bmpBytes));
+
+                finalBuilder.AddRange(Encoding.UTF8.GetBytes("\n\n" + text2 + "\n\n"));
+                finalBuilder.AddRange(new byte[] { 0x1D, 0x56, 0x41, 0x00 }); // corte
+
+                var printer = new PrintDocument().PrinterSettings.PrinterName;
+                RawPrinterHelper.SendBytesToPrinter(printer, finalBuilder.ToArray());
+
                 await Write(res, new { status = "printed" });
             }
             catch (Exception ex)
@@ -118,6 +107,15 @@ namespace PrintAgent
                 await Write(res, new { error = "Error al imprimir: " + ex.Message });
             }
         }
+
+
+        private void SendRawText(string text)
+        {
+            var printer = new PrintDocument().PrinterSettings.PrinterName;
+            var bytes = Encoding.UTF8.GetEncoding("UTF-8").GetBytes(text);
+            RawPrinterHelper.SendBytesToPrinter(printer, bytes);
+        }
+
 
         private async Task Handle(HttpListenerContext ctx)
         {
@@ -214,23 +212,9 @@ namespace PrintAgent
 
                         string text = dataEl.GetString() ?? "";
 
-                        var pd = new PrintDocument();
-                        pd.PrintPage += (sender, e) =>
-                        {
-                            var g = e.Graphics;
-                            var font = new Font("Arial", 10);
-                            float marginLeft = 10;
-                            float y = 10;
-                            float maxWidth = e.PageBounds.Width - 2 * marginLeft;
-
-                            var rect = new RectangleF(marginLeft, y, maxWidth, e.PageBounds.Height - y);
-                            g.DrawString(text, font, Brushes.Black, rect);
-                        };
-
                         try
                         {
-                            pd.Print();
-                            SendCutCommand();
+                            SendRawText(text + "\n\n" + "\x1D\x56\x41\x00"); // texto crudo + corte
                             await Write(res, new { status = "printed_with_cut" });
                         }
                         catch (Exception ex)
@@ -240,6 +224,7 @@ namespace PrintAgent
                         }
                         return;
                     }
+
                 }
 
                 res.StatusCode = 404;
