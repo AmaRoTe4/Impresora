@@ -221,9 +221,21 @@ namespace PrintAgent
                             return;
                         }
 
-                        var payload = (dataEl.GetString() ?? "") + "\n\n\n\x1D\x56\x41\x00"; // Agrega corte al final
-                        _queue.Add(new PrintJob(JobKind.Text, payload));
+                        var text = dataEl.GetString() ?? "";
+                        var builder = new StringBuilder();
+                        builder.AppendLine(text);
+                        builder.AppendLine(); // salto
+                        builder.AppendLine();
+                        builder.Append("\x1D\x56\x41\x00"); // corte
+
+                        var bytes = Encoding.UTF8.GetBytes(builder.ToString());
+                        var printer = new PrintDocument().PrinterSettings.PrinterName;
+                        RawPrinterHelper.SendBytesToPrinter(printer, bytes);
+
+                        await Write(res, new { status = "printed_with_cut" });
+                        return;
                     }
+
 
 
                     await Write(res, new { status = "queued" });
