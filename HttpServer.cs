@@ -89,11 +89,22 @@ namespace PrintAgent
                 float y = 10;
                 float maxWidth = e.PageBounds.Width - 2 * marginLeft;
 
-                var rectText = new RectangleF(marginLeft, y, maxWidth, e.PageBounds.Height);
-                var format = new StringFormat { FormatFlags = StringFormatFlags.LineLimit };
-                g.DrawString(text, font, Brushes.Black, rectText, format);
-            };
+                // Text 1
+                var rectText1 = new RectangleF(marginLeft, y, maxWidth, e.PageBounds.Height);
+                var sizeText1 = g.MeasureString(text1, font, (int)maxWidth);
+                g.DrawString(text1, font, Brushes.Black, rectText1);
+                y += sizeText1.Height + 10;
 
+                // QR
+                int qrSize = 150;
+                int qrX = (int)((e.PageBounds.Width - qrSize) / 2);
+                g.DrawImage(qrImage, new Rectangle(qrX, (int)y, qrSize, qrSize));
+                y += qrSize + 10;
+
+                // Text 2
+                var rectText2 = new RectangleF(marginLeft, y, maxWidth, e.PageBounds.Height - y);
+                g.DrawString(text2, font, Brushes.Black, rectText2);
+            };
 
             try
             {
