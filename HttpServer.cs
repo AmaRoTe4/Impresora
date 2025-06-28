@@ -1,4 +1,3 @@
-
 using System;
 using System.Collections.Concurrent;
 using System.Net;
@@ -6,6 +5,8 @@ using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
 using System.Drawing.Printing;
+using System.Drawing;
+using System.IO;
 
 namespace PrintAgent
 {
@@ -16,7 +17,7 @@ namespace PrintAgent
         private readonly BlockingCollection<PrintJob> _queue;
         private readonly Logger _logger;
 
-        public HttpServer(PrinterManager manager, BlockingCollection<PrintJob> queue, Logger logger, string prefix="http://localhost:5000/")
+        public HttpServer(PrinterManager manager, BlockingCollection<PrintJob> queue, Logger logger, string prefix = "http://localhost:5000/")
         {
             _printerManager = manager;
             _queue = queue;
@@ -38,21 +39,15 @@ namespace PrintAgent
 
         private void SendCutCommand()
         {
-            // Comando de corte: GS V A 0
             byte[] cut = new byte[] { 0x1D, 0x56, 0x41, 0x00 };
             string printer = new PrintDocument().PrinterSettings.PrinterName;
-
             RawPrinterHelper.SendBytesToPrinter(printer, cut);
         }
-
 
         private async Task HandlePrintWithQR(string body, HttpListenerResponse res)
         {
             JsonDocument json;
-            try
-            {
-                json = JsonDocument.Parse(body);
-            }
+            try { json = JsonDocument.Parse(body); }
             catch
             {
                 res.StatusCode = 400;
@@ -73,12 +68,8 @@ namespace PrintAgent
             string text2 = text2El.GetString() ?? "";
             string qrBase64 = qrEl.GetString() ?? "";
 
-            // Decodificar QR base64
             byte[] qrBytes;
-            try
-            {
-                qrBytes = Convert.FromBase64String(qrBase64);
-            }
+            try { qrBytes = Convert.FromBase64String(qrBase64); }
             catch
             {
                 res.StatusCode = 400;
@@ -89,28 +80,18 @@ namespace PrintAgent
             using var qrStream = new MemoryStream(qrBytes);
             using var qrImage = Image.FromStream(qrStream);
 
-            // Imprimir
             var pd = new PrintDocument();
             pd.PrintPage += (sender, e) =>
             {
                 var g = e.Graphics;
                 var font = new Font("Arial", 10);
-                float marginLeft = 0;
-                float y = 0;
+                float marginLeft = 10;
+                float y = 10;
+                float maxWidth = e.PageBounds.Width - 2 * marginLeft;
 
-                // Medir y dibujar texto1
-                var text1Size = g.MeasureString(text1, font);
-                g.DrawString(text1, font, Brushes.Black, marginLeft, y);
-                y += text1Size.Height + 10;
-
-                // Dibujar imagen QR
-                int qrWidth = 150;
-                int qrX = (int)((e.PageBounds.Width - qrWidth) / 2);
-                g.DrawImage(qrImage, new Rectangle(qrX, (int)y, qrWidth, qrWidth));
-                y += qrWidth + 10;
-
-                // Medir y dibujar texto2
-                g.DrawString(text2, font, Brushes.Black, marginLeft, y);
+                var rectText = new RectangleF(marginLeft, y, maxWidth, e.PageBounds.Height);
+                var format = new StringFormat { FormatFlags = StringFormatFlags.LineLimit };
+                g.DrawString(text, font, Brushes.Black, rectText, format);
             };
 
 
@@ -132,7 +113,6 @@ namespace PrintAgent
             var req = ctx.Request;
             var res = ctx.Response;
 
-            // CORS
             res.AddHeader("Access-Control-Allow-Origin", "*");
             res.AddHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
             res.AddHeader("Access-Control-Allow-Headers", "Content-Type");
@@ -159,7 +139,7 @@ namespace PrintAgent
 
                 if (req.Url.AbsolutePath == "/config" && req.HttpMethod == "POST")
                 {
-                    using var sr = new System.IO.StreamReader(req.InputStream, req.ContentEncoding);
+                    using var sr = new StreamReader(req.InputStream, req.ContentEncoding);
                     var body = await sr.ReadToEndAsync();
                     var json = JsonDocument.Parse(body);
                     if (json.RootElement.TryGetProperty("printer", out var pr))
@@ -169,9 +149,8 @@ namespace PrintAgent
                 }
 
                 bool isText = req.Url.AbsolutePath is "/print" or "/print_text";
-                bool isZpl  = req.Url.AbsolutePath == "/print_zpl";
-                bool isQR  = req.Url.AbsolutePath == "/print_qr";
-
+                bool isZpl = req.Url.AbsolutePath == "/print_zpl";
+                bool isQR = req.Url.AbsolutePath == "/print_qr";
 
                 if (req.HttpMethod == "POST" && (isText || isZpl || isQR))
                 {
@@ -203,13 +182,14 @@ namespace PrintAgent
                             var codigo = item.GetProperty("codigo_barra").GetString() ?? "";
 
                             sb.Append("^XA")
-                            .Append("^PW400^LH0,0")
-                            .Append("^BY2,2,50^FO30,20^BCN,50,Y,N,N^FD").Append(codigo).Append("^FS")
-                            .Append("^FO30,100^A0,20,20^FD").Append(nombre).Append("^FS")
-                            .Append("^XZ");
+                              .Append("^PW400^LH0,0")
+                              .Append("^BY2,2,50^FO30,20^BCN,50,Y,N,N^FD").Append(codigo).Append("^FS")
+                              .Append("^FO30,100^A0,20,20^FD").Append(nombre).Append("^FS")
+                              .Append("^XZ");
                         }
-
                         _queue.Add(new PrintJob(JobKind.Zpl, sb.ToString()));
+                        await Write(res, new { status = "queued" });
+                        return;
                     }
 
                     if (isText)
@@ -221,31 +201,25 @@ namespace PrintAgent
                             return;
                         }
 
-                        var text = dataEl.GetString() ?? "";
+                        string text = dataEl.GetString() ?? "";
 
                         var pd = new PrintDocument();
                         pd.PrintPage += (sender, e) =>
                         {
                             var g = e.Graphics;
                             var font = new Font("Arial", 10);
-                            float y = 0;
+                            float marginLeft = 10;
+                            float y = 10;
+                            float maxWidth = e.PageBounds.Width - 2 * marginLeft;
 
-                            foreach (var line in text.Split('\n'))
-                            {
-                                g.DrawString(line, font, Brushes.Black, 0, y);
-                                y += font.GetHeight(g);
-                            }
+                            var rect = new RectangleF(marginLeft, y, maxWidth, e.PageBounds.Height - y);
+                            g.DrawString(text, font, Brushes.Black, rect);
                         };
 
                         try
                         {
                             pd.Print();
-
-                            // Enviar comando de corte al final (si la impresora lo soporta)
-                            var printer = new PrintDocument().PrinterSettings.PrinterName;
-                            byte[] cut = new byte[] { 0x1D, 0x56, 0x41, 0x00 };
-                            RawPrinterHelper.SendBytesToPrinter(printer, cut);
-
+                            SendCutCommand();
                             await Write(res, new { status = "printed_with_cut" });
                         }
                         catch (Exception ex)
@@ -253,12 +227,8 @@ namespace PrintAgent
                             res.StatusCode = 500;
                             await Write(res, new { error = "Error al imprimir: " + ex.Message });
                         }
-
                         return;
                     }
-
-                    await Write(res, new { status = "queued" });
-                    return;
                 }
 
                 res.StatusCode = 404;
