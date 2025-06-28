@@ -221,10 +221,10 @@ namespace PrintAgent
                             return;
                         }
 
-                        var payload = dataEl.GetString() ?? "";
+                        var payload = (dataEl.GetString() ?? "") + "\n\n\n\x1D\x56\x41\x00"; // Agrega corte al final
                         _queue.Add(new PrintJob(JobKind.Text, payload));
-                        SendCutCommand();
                     }
+
 
                     await Write(res, new { status = "queued" });
                     return;
