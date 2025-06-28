@@ -222,21 +222,40 @@ namespace PrintAgent
                         }
 
                         var text = dataEl.GetString() ?? "";
-                        var builder = new StringBuilder();
-                        builder.AppendLine(text);
-                        builder.AppendLine(); // salto
-                        builder.AppendLine();
-                        builder.Append("\x1D\x56\x41\x00"); // corte
 
-                        var bytes = Encoding.UTF8.GetBytes(builder.ToString());
-                        var printer = new PrintDocument().PrinterSettings.PrinterName;
-                        RawPrinterHelper.SendBytesToPrinter(printer, bytes);
+                        var pd = new PrintDocument();
+                        pd.PrintPage += (sender, e) =>
+                        {
+                            var g = e.Graphics;
+                            var font = new Font("Arial", 10);
+                            float y = 0;
 
-                        await Write(res, new { status = "printed_with_cut" });
+                            foreach (var line in text.Split('\n'))
+                            {
+                                g.DrawString(line, font, Brushes.Black, 0, y);
+                                y += font.GetHeight(g);
+                            }
+                        };
+
+                        try
+                        {
+                            pd.Print();
+
+                            // Enviar comando de corte al final (si la impresora lo soporta)
+                            var printer = new PrintDocument().PrinterSettings.PrinterName;
+                            byte[] cut = new byte[] { 0x1D, 0x56, 0x41, 0x00 };
+                            RawPrinterHelper.SendBytesToPrinter(printer, cut);
+
+                            await Write(res, new { status = "printed_with_cut" });
+                        }
+                        catch (Exception ex)
+                        {
+                            res.StatusCode = 500;
+                            await Write(res, new { error = "Error al imprimir: " + ex.Message });
+                        }
+
                         return;
                     }
-
-
 
                     await Write(res, new { status = "queued" });
                     return;
