@@ -3,6 +3,9 @@ using System.Runtime.InteropServices;
 using System.Drawing.Printing;
 using System.IO;
 
+namespace PrintAgent
+{
+
 public class RawPrinterHelper
 {
     [DllImport("winspool.Drv", EntryPoint="OpenPrinterA", SetLastError=true)]
@@ -92,4 +95,6 @@ public class RawPrinterHelper
         Marshal.FreeCoTaskMem(pUnmanagedBytes);
         return success;
     }
+}
+
 }
