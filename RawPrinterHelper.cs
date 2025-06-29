@@ -36,12 +36,48 @@ public class RawPrinterHelper
 
     public static byte[] GetImageCommandFromBitmap(byte[] bmpBytes)
     {
-        // Esto convierte una imagen BMP a comando ESC/POS para impresión de imagenes
-        // Usa alguna librería externa o herramienta como ESC/POS Image Helper
-        // Te lo puedo implementar si querés, pero hay muchas variantes según la impresora
+        using var ms = new MemoryStream(bmpBytes);
+        using var bmp = new Bitmap(ms);
 
-        throw new NotImplementedException("Falta implementar conversión ESC/POS desde BMP.");
+        int width = bmp.Width;
+        int height = bmp.Height;
+        int widthBytes = (width + 7) / 8;
+
+        var command = new List<byte>();
+
+        // Comando de impresión gráfica en modo bit image
+        command.Add(0x1B); // ESC
+        command.Add(0x2A); // *
+        command.Add(0x21); // modo: 32-dot single-density
+        command.Add((byte)(widthBytes % 256)); // nL
+        command.Add((byte)(widthBytes / 256)); // nH
+
+        for (int y = 0; y < height; y++)
+        {
+            for (int x = 0; x < widthBytes * 8; x += 8)
+            {
+                byte b = 0;
+                for (int bit = 0; bit < 8; bit++)
+                {
+                    int pixelX = x + bit;
+                    if (pixelX >= width) continue;
+
+                    var pixel = bmp.GetPixel(pixelX, y);
+                    int luminance = (int)((pixel.R + pixel.G + pixel.B) / 3);
+                    if (luminance < 128) // negro
+                    {
+                        b |= (byte)(1 << (7 - bit));
+                    }
+                }
+                command.Add(b);
+            }
+
+            command.Add(0x0A); // salto de línea
+        }
+
+        return command.ToArray();
     }
+
 
 
     public static bool SendBytesToPrinter(string printerName, byte[] bytes)

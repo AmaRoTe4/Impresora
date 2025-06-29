@@ -112,7 +112,7 @@ namespace PrintAgent
         private void SendRawText(string text)
         {
             var printer = new PrintDocument().PrinterSettings.PrinterName;
-            var bytes = Encoding.UTF8.GetEncoding("UTF-8").GetBytes(text);
+            var bytes = Encoding.GetEncoding("UTF-8").GetBytes(text);
             RawPrinterHelper.SendBytesToPrinter(printer, bytes);
         }
 
