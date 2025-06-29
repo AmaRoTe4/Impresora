@@ -45,15 +45,15 @@ public class RawPrinterHelper
 
         var command = new List<byte>();
 
-        // Comando de impresión gráfica en modo bit image
-        command.Add(0x1B); // ESC
-        command.Add(0x2A); // *
-        command.Add(0x21); // modo: 32-dot single-density
-        command.Add((byte)(widthBytes % 256)); // nL
-        command.Add((byte)(widthBytes / 256)); // nH
-
+        // ESC * m nL nH bitmap
         for (int y = 0; y < height; y++)
         {
+            command.Add(0x1B); // ESC
+            command.Add(0x2A); // *
+            command.Add(0x21); // modo 32-dot
+            command.Add((byte)(widthBytes % 256)); // nL
+            command.Add((byte)(widthBytes / 256)); // nH
+
             for (int x = 0; x < widthBytes * 8; x += 8)
             {
                 byte b = 0;
@@ -63,11 +63,8 @@ public class RawPrinterHelper
                     if (pixelX >= width) continue;
 
                     var pixel = bmp.GetPixel(pixelX, y);
-                    int luminance = (int)((pixel.R + pixel.G + pixel.B) / 3);
-                    if (luminance < 128) // negro
-                    {
-                        b |= (byte)(1 << (7 - bit));
-                    }
+                    int luminance = (pixel.R + pixel.G + pixel.B) / 3;
+                    if (luminance < 128) b |= (byte)(1 << (7 - bit));
                 }
                 command.Add(b);
             }
@@ -77,8 +74,6 @@ public class RawPrinterHelper
 
         return command.ToArray();
     }
-
-
 
     public static bool SendBytesToPrinter(string printerName, byte[] bytes)
     {
