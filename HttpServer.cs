@@ -192,17 +192,20 @@ namespace PrintAgent
                             var codigo = item.GetProperty("codigo_barra").GetString() ?? "";
 
                             sb.Append("^XA")
-                            .Append("^PW300^LH0,0") // Ancho máximo ≈ 38mm
-                            .Append("^BY2,2,30")     // Código de barras más bajo
-                            .Append("^FO20,10^BCN,30,Y,N,N^FD").Append(codigo).Append("^FS") // Código de barras
-                            .Append("^FO20,50^A0N,16,16^FD").Append(nombre).Append("^FS")    // Nombre del producto
+                            .Append("^PW300^LH0,0")          // 300 dots ≈ 37,5 mm
+                            .Append("^BY1,2,30")             // módulo 1 dot, ratio 2, alto 30
+                            .Append("^FO20,10^BCN,30,N,N,N") // sin interpretación → no pisa texto
+                            .Append("^FD").Append(codigo).Append("^FS")
+                            .Append("^FO20,45")              // baja un poco el texto
+                            .Append("^FB260,3,0,L,0")        // 260 dots ancho, máx. 3 líneas
+                            .Append("^A0N,16,16^FD").Append(nombre).Append("^FS")
                             .Append("^XZ");
                         }
                         _queue.Add(new PrintJob(JobKind.Zpl, sb.ToString()));
                         await Write(res, new { status = "queued" });
                         return;
 
-//50X25
+                    //50X25
                     //foreach (var item in arr.EnumerateArray())
                     //{
                     //    var nombre = item.GetProperty("nombre").GetString() ?? "";
