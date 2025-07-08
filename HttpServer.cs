@@ -185,20 +185,39 @@ namespace PrintAgent
                         }
 
                         var sb = new StringBuilder();
+                        //38X20
                         foreach (var item in arr.EnumerateArray())
                         {
                             var nombre = item.GetProperty("nombre").GetString() ?? "";
                             var codigo = item.GetProperty("codigo_barra").GetString() ?? "";
 
                             sb.Append("^XA")
-                              .Append("^PW400^LH0,0")
-                              .Append("^BY2,2,50^FO30,20^BCN,50,Y,N,N^FD").Append(codigo).Append("^FS")
-                              .Append("^FO30,100^A0,20,20^FD").Append(nombre).Append("^FS")
-                              .Append("^XZ");
+                            .Append("^PW300^LH0,0") // Ancho máximo ≈ 38mm
+                            .Append("^BY2,2,30")     // Código de barras más bajo
+                            .Append("^FO20,10^BCN,30,Y,N,N^FD").Append(codigo).Append("^FS") // Código de barras
+                            .Append("^FO20,50^A0N,16,16^FD").Append(nombre).Append("^FS")    // Nombre del producto
+                            .Append("^XZ");
                         }
                         _queue.Add(new PrintJob(JobKind.Zpl, sb.ToString()));
                         await Write(res, new { status = "queued" });
                         return;
+
+//50X25
+                    //foreach (var item in arr.EnumerateArray())
+                    //{
+                    //    var nombre = item.GetProperty("nombre").GetString() ?? "";
+                    //    var codigo = item.GetProperty("codigo_barra").GetString() ?? "";
+
+                    //    sb.Append("^XA")
+                    //    .Append("^PW300^LH0,0") // Ancho máximo ≈ 38mm
+                    //    .Append("^BY2,2,30")     // Código de barras más bajo
+                    //    .Append("^FO20,10^BCN,30,Y,N,N^FD").Append(codigo).Append("^FS") // Código de barras
+                    //    .Append("^FO20,50^A0N,16,16^FD").Append(nombre).Append("^FS")    // Nombre del producto
+                    //    .Append("^XZ");
+                    //}
+                    //_queue.Add(new PrintJob(JobKind.Zpl, sb.ToString()));
+                    //await Write(res, new { status = "queued" });
+                    //return;
                     }
 
                     if (isText)
