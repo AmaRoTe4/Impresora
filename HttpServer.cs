@@ -40,7 +40,7 @@ namespace PrintAgent
         private void SendCutCommand()
         {
             byte[] cut = new byte[] { 0x1D, 0x56, 0x41, 0x00 };
-            string printer = new PrintDocument().PrinterSettings.PrinterName;
+            string printer = _printerManager.GetPreferredPrinter();
             RawPrinterHelper.SendBytesToPrinter(printer, cut);
         }
 
