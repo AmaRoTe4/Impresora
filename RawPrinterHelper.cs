@@ -80,21 +80,59 @@ public class RawPrinterHelper
 
     public static bool SendBytesToPrinter(string printerName, byte[] bytes)
     {
-        IntPtr pPrinter;
-        var di = new DOCINFOA() { pDocName = "Cut", pDataType = "RAW" };
-        if (!OpenPrinter(printerName, out pPrinter, IntPtr.Zero)) return false;
-        if (!StartDocPrinter(pPrinter, 1, ref di)) return false;
-        if (!StartPagePrinter(pPrinter)) return false;
+        IntPtr pPrinter = IntPtr.Zero;
+        DOCINFOA di = new DOCINFOA()
+        {
+            pDocName = "PrintAgent Job",
+            pDataType = "RAW"
+        };
 
-        IntPtr pUnmanagedBytes = Marshal.AllocCoTaskMem(bytes.Length);
-        Marshal.Copy(bytes, 0, pUnmanagedBytes, bytes.Length);
-        bool success = WritePrinter(pPrinter, pUnmanagedBytes, bytes.Length, out _);
-        EndPagePrinter(pPrinter);
-        EndDocPrinter(pPrinter);
-        ClosePrinter(pPrinter);
-        Marshal.FreeCoTaskMem(pUnmanagedBytes);
-        return success;
+        try
+        {
+            // Normalizar nombre por compatibilidad
+            printerName = printerName?.Trim().Normalize();
+
+            if (!OpenPrinter(printerName, out pPrinter, IntPtr.Zero))
+            {
+                Console.WriteLine($"❌ No se pudo abrir la impresora: '{printerName}'");
+                return false;
+            }
+
+            if (!StartDocPrinter(pPrinter, 1, ref di))
+            {
+                Console.WriteLine("❌ Falló StartDocPrinter");
+                return false;
+            }
+
+            if (!StartPagePrinter(pPrinter))
+            {
+                Console.WriteLine("❌ Falló StartPagePrinter");
+                return false;
+            }
+
+            IntPtr pUnmanagedBytes = Marshal.AllocCoTaskMem(bytes.Length);
+            Marshal.Copy(bytes, 0, pUnmanagedBytes, bytes.Length);
+
+            bool success = WritePrinter(pPrinter, pUnmanagedBytes, bytes.Length, out _);
+
+            Marshal.FreeCoTaskMem(pUnmanagedBytes);
+
+            EndPagePrinter(pPrinter);
+            EndDocPrinter(pPrinter);
+            ClosePrinter(pPrinter);
+
+            if (!success)
+                Console.WriteLine("❌ Falló WritePrinter");
+
+            return success;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"❌ Excepción al imprimir: {ex.Message}");
+            return false;
+        }
     }
+
 }
 
 }
