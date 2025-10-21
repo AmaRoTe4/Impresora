@@ -175,56 +175,96 @@ namespace PrintAgent
                     var json = JsonDocument.Parse(body);
 
                     if (isZpl)
-                    {
-                        if (!json.RootElement.TryGetProperty("valores", out var arr) ||
-                            arr.ValueKind != JsonValueKind.Array || arr.GetArrayLength() == 0)
-                        {
-                            res.StatusCode = 400;
-                            await Write(res, new { error = "Falta arreglo 'valores' con nombre y codigo_barra" });
-                            return;
-                        }
+{
+    using var sr = new StreamReader(req.InputStream, req.ContentEncoding);
+    var body = await sr.ReadToEndAsync();
 
-                        var sb = new StringBuilder();
-                        //38X20
-                        foreach (var item in arr.EnumerateArray())
-                        {
-                            // --- datos base ---------------------------------------------------------
-                            var nombre      = item.GetProperty("nombre").GetString()        ?? "";
-                            var codigo      = item.GetProperty("codigo_barra").GetString()  ?? "";
-                            var precio      = item.GetProperty("precio").GetString()        ?? "";
-                            var usePrecioEl = item.GetProperty("use_precio").GetString()    ?? "false";
+    var json = JsonDocument.Parse(body);
 
-                            // --- valida si debe mostrar precio -------------------------------------
-                            var mostrarPrecio = bool.TryParse(usePrecioEl, out var flag) && flag;
+    if (!json.RootElement.TryGetProperty("valores", out var arr) ||
+        arr.ValueKind != JsonValueKind.Array || arr.GetArrayLength() == 0)
+    {
+        res.StatusCode = 400;
+        await Write(res, new { error = "Falta arreglo 'valores' con codigo_barra" });
+        return;
+    }
 
-                            // —–– limita largo del precio para que nunca desborde (≈16 carac. máx.) –
-                            if (precio.Length > 16) precio = precio[..16];
+    var sb = new StringBuilder();
 
-                            // --- plantilla ZPL ------------------------------------------------------
-                            sb.Append("^XA")                        // inicio etiqueta
-                            .Append("^PW300^LH0,0")               // 300 dots (≈37,5 mm de ancho útil)
-                            .Append("^BY1,2,30")                  // ancho barras, ratio, alto 30
-                            .Append("^FO20,10^BCN,30,N,N,N")      // barcode sin texto auto
-                            .Append("^FD").Append(codigo).Append("^FS")
-                            .Append("^FO20,45")                   // nombre bajo el código de barras
-                            .Append("^FB260,3,0,L,0")             // bloque 260 px, máx. 3 líneas, alineado izq.
-                            .Append("^A0N,16,16^FD").Append(nombre).Append("^FS");
+    foreach (var item in arr.EnumerateArray())
+    {
+        // Solo procesar si existe el campo "codigo_barra"
+        if (!item.TryGetProperty("codigo_barra", out var codigoEl))
+            continue;
 
-                            // --- precio (opcional, centrado) ---------------------------------------
-                            if (mostrarPrecio)
-                            {
-                                sb.Append("^FO20,70")               // posición vertical
-                                .Append("^FB260,1,0,C,0")         // bloque 260 px, 1 línea, alineado CENTRO
-                                .Append("^A0N,16,16^FD").Append(precio).Append("^FS");
-                            }
+        var codigo = codigoEl.GetString() ?? "";
 
-                            sb.Append("^XZ");                       // fin etiqueta
-                        }
+        // Formato de etiqueta larga (solo código de barras vertical)
+        sb.Append("^XA")
+          .Append("^PW200")               // ancho ≈ 25 mm (203 dpi)
+          .Append("^LL320")               // largo ≈ 40 mm
+          .Append("^LH0,0")               
+          .Append("^BY2,2,300")           // grosor, relación, alto
+          .Append("^FO8,10")              // posición inicial
+          .Append("^BCB,300,N,N,N")       // código de barras vertical (de abajo hacia arriba)
+          .Append("^FD").Append(codigo).Append("^FS")
+          .Append("^XZ");
+    }
+
+    _queue.Add(new PrintJob(JobKind.Zpl, sb.ToString()));
+    await Write(res, new { status = "queued" });
+    return;
+
+                        //38x20
+                        //if (!json.RootElement.TryGetProperty("valores", out var arr) ||
+                        //    arr.ValueKind != JsonValueKind.Array || arr.GetArrayLength() == 0)
+                        //{
+                        //    res.StatusCode = 400;
+                        //    await Write(res, new { error = "Falta arreglo 'valores' con nombre y codigo_barra" });
+                        //    return;
+                        //}
+
+                        //var sb = new StringBuilder();
+                        ////38X20
+                        //foreach (var item in arr.EnumerateArray())
+                        //{
+                        //    // --- datos base ---------------------------------------------------------
+                        //    var nombre      = item.GetProperty("nombre").GetString()        ?? "";
+                        //    var codigo      = item.GetProperty("codigo_barra").GetString()  ?? "";
+                        //    var precio      = item.GetProperty("precio").GetString()        ?? "";
+                        //    var usePrecioEl = item.GetProperty("use_precio").GetString()    ?? "false";
+
+                        //    // --- valida si debe mostrar precio -------------------------------------
+                        //    var mostrarPrecio = bool.TryParse(usePrecioEl, out var flag) && flag;
+
+                        //    // —–– limita largo del precio para que nunca desborde (≈16 carac. máx.) –
+                        //    if (precio.Length > 16) precio = precio[..16];
+
+                        //    // --- plantilla ZPL ------------------------------------------------------
+                        //    sb.Append("^XA")                        // inicio etiqueta
+                        //    .Append("^PW300^LH0,0")               // 300 dots (≈37,5 mm de ancho útil)
+                        //    .Append("^BY1,2,30")                  // ancho barras, ratio, alto 30
+                        //    .Append("^FO20,10^BCN,30,N,N,N")      // barcode sin texto auto
+                        //    .Append("^FD").Append(codigo).Append("^FS")
+                        //    .Append("^FO20,45")                   // nombre bajo el código de barras
+                        //    .Append("^FB260,3,0,L,0")             // bloque 260 px, máx. 3 líneas, alineado izq.
+                        //    .Append("^A0N,16,16^FD").Append(nombre).Append("^FS");
+
+                        //    // --- precio (opcional, centrado) ---------------------------------------
+                        //    if (mostrarPrecio)
+                        //    {
+                        //        sb.Append("^FO20,70")               // posición vertical
+                        //        .Append("^FB260,1,0,C,0")         // bloque 260 px, 1 línea, alineado CENTRO
+                        //        .Append("^A0N,16,16^FD").Append(precio).Append("^FS");
+                        //    }
+
+                        //    sb.Append("^XZ");                       // fin etiqueta
+                        //}
 
 
-                        _queue.Add(new PrintJob(JobKind.Zpl, sb.ToString()));
-                        await Write(res, new { status = "queued" });
-                        return;
+                        //_queue.Add(new PrintJob(JobKind.Zpl, sb.ToString()));
+                        //await Write(res, new { status = "queued" });
+                        //return;
 
                     //50X25
                     //foreach (var item in arr.EnumerateArray())
