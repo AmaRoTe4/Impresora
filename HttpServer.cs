@@ -175,45 +175,54 @@ namespace PrintAgent
                     var json = JsonDocument.Parse(body);
 
                     if (isZpl)
-{
-    using var sr = new StreamReader(req.InputStream, req.ContentEncoding);
-    var body = await sr.ReadToEndAsync();
+                        {
+                            // json YA fue parseado arriba a partir de 'body'
 
-    var json = JsonDocument.Parse(body);
+                            if (!json.RootElement.TryGetProperty("valores", out var arr) ||
+                                arr.ValueKind != JsonValueKind.Array || arr.GetArrayLength() == 0)
+                            {
+                                res.StatusCode = 400;
+                                await Write(res, new { error = "Falta arreglo 'valores' con codigo_barra" });
+                                return;
+                            }
 
-    if (!json.RootElement.TryGetProperty("valores", out var arr) ||
-        arr.ValueKind != JsonValueKind.Array || arr.GetArrayLength() == 0)
-    {
-        res.StatusCode = 400;
-        await Write(res, new { error = "Falta arreglo 'valores' con codigo_barra" });
-        return;
-    }
+                            var sb = new StringBuilder();
+                            int agregadas = 0;
 
-    var sb = new StringBuilder();
+                            foreach (var item in arr.EnumerateArray())
+                            {
+                                if (!item.TryGetProperty("codigo_barra", out var codigoEl))
+                                    continue;
 
-    foreach (var item in arr.EnumerateArray())
-    {
-        // Solo procesar si existe el campo "codigo_barra"
-        if (!item.TryGetProperty("codigo_barra", out var codigoEl))
-            continue;
+                                var codigo = codigoEl.GetString() ?? "";
+                                if (string.IsNullOrWhiteSpace(codigo))
+                                    continue;
 
-        var codigo = codigoEl.GetString() ?? "";
+                                // Etiqueta apéndice 25x40 mm @203dpi (solo barcode vertical)
+                                sb.Append("^XA")
+                                .Append("^PW200")               // 25 mm * ~8 dpmm
+                                .Append("^LL320")               // 40 mm * ~8 dpmm
+                                .Append("^LH0,0")
+                                .Append("^BY2,2,300")           // grosor, relación, alto
+                                .Append("^FO8,10")              // pequeño margen
+                                .Append("^BCB,300,N,N,N")       // vertical (bottom-up), sin texto humano
+                                .Append("^FD").Append(codigo).Append("^FS")
+                                .Append("^XZ");
 
-        // Formato de etiqueta larga (solo código de barras vertical)
-        sb.Append("^XA")
-          .Append("^PW200")               // ancho ≈ 25 mm (203 dpi)
-          .Append("^LL320")               // largo ≈ 40 mm
-          .Append("^LH0,0")               
-          .Append("^BY2,2,300")           // grosor, relación, alto
-          .Append("^FO8,10")              // posición inicial
-          .Append("^BCB,300,N,N,N")       // código de barras vertical (de abajo hacia arriba)
-          .Append("^FD").Append(codigo).Append("^FS")
-          .Append("^XZ");
-    }
+                                agregadas++;
+                            }
 
-    _queue.Add(new PrintJob(JobKind.Zpl, sb.ToString()));
-    await Write(res, new { status = "queued" });
-    return;
+                            if (agregadas == 0)
+                            {
+                                res.StatusCode = 400;
+                                await Write(res, new { error = "Ningún item contiene 'codigo_barra' válido" });
+                                return;
+                            }
+
+                            _queue.Add(new PrintJob(JobKind.Zpl, sb.ToString()));
+                            await Write(res, new { status = "queued", count = agregadas });
+                            return;
+                        }
 
                         //38x20
                         //if (!json.RootElement.TryGetProperty("valores", out var arr) ||
@@ -266,6 +275,7 @@ namespace PrintAgent
                         //await Write(res, new { status = "queued" });
                         //return;
 
+                    
                     //50X25
                     //foreach (var item in arr.EnumerateArray())
                     //{
@@ -282,7 +292,6 @@ namespace PrintAgent
                     //_queue.Add(new PrintJob(JobKind.Zpl, sb.ToString()));
                     //await Write(res, new { status = "queued" });
                     //return;
-                    }
 
                     if (isText)
                     {
