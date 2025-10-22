@@ -187,20 +187,43 @@ namespace PrintAgent
                         var sb = new StringBuilder();
                         int agregadas = 0;
 
-                        // Tamaño físico
-                        const int WIDTH_MM  = 38;
-                        const int HEIGHT_MM = 20;
-                        int dpi  = 203;                        // TODO: tomar de config
+                        // ========================
+                        // Layout físico (MM) y DPI
+                        // ========================
+                        const double LABEL_W_MM = 30.0; // ANCHO total
+                        const double LABEL_H_MM = 70.0; // ALTO total
+
+                        const double ROI_W_MM = 15.0;   // ANCHO del ROI (abajo-derecha)
+                        const double ROI_H_MM = 25.0;   // ALTO del ROI
+
+                        // TODO: exponer en /config y leer desde _printerManager o settings
+                        int dpi = 203; // 203 ó 300
                         int dpmm = (dpi == 300) ? 12 : 8;
 
-                        int PW = (int)Math.Round(WIDTH_MM  * (double)dpmm);
-                        int LL = (int)Math.Round(HEIGHT_MM * (double)dpmm);
+                        // Dots etiqueta
+                        int PW = (int)Math.Round(LABEL_W_MM * (double)dpmm);
+                        int LL = (int)Math.Round(LABEL_H_MM * (double)dpmm);
 
-                        // Parámetros de barras
-                        int MARGIN = dpmm;                     // ≈1 mm
-                        int H = Math.Min(24, LL - 2 * MARGIN); // más chico que 30 para “achicar” el código
+                        // Dots ROI
+                        int ROI_W = (int)Math.Round(ROI_W_MM * (double)dpmm);
+                        int ROI_H = (int)Math.Round(ROI_H_MM * (double)dpmm);
 
-                        const int RATIO = 2;                   // 2:1 recomendado (no afecta el largo en módulos)
+                        // Márgenes (~1mm)
+                        int MARGIN = dpmm;
+
+                        // Origen (esquina sup-izq) del ROI pegado a la esquina INFERIOR-DERECHA
+                        int roiX = PW - MARGIN - ROI_W;
+                        int roiY = LL - MARGIN - ROI_H;
+                        if (roiX < 0) roiX = 0;
+                        if (roiY < 0) roiY = 0;
+
+                        // Parámetros del barcode (rotado 270° con ^BCB)
+                        // H = grosor en X del código ya rotado. Elegimos seguro para que quepa en los 15 mm del ROI.
+                        int H = (dpi == 300) ? 24 : 18;            // 24 dots @300dpi o 18 dots @203dpi
+                        H = Math.Min(H, ROI_W - 2 * MARGIN);       // clamp por seguridad (debe caber en X)
+
+                        const int RATIO = 2;                       // relación 2:1
+                        int usableY = Math.Max(8, ROI_H - 2 * MARGIN); // alto útil vertical dentro del ROI
 
                         foreach (var item in arr.EnumerateArray())
                         {
@@ -208,36 +231,41 @@ namespace PrintAgent
                             string codigo = (codigoEl.GetString() ?? "").Trim();
                             if (codigo.Length == 0) continue;
 
-                            // Estimación de módulos (Code128) para dimensionar Y al rotar 270°
+                            // Estimación de módulos Code128 (aprox. + quiet zones)
                             int len = codigo.Length;
-                            int estimatedModules = 68 + Math.Max(0, (len - 12)) * 11 + 20; // aprox. + quiet zones
+                            int estimatedModules = 68 + Math.Max(0, (len - 12)) * 11 + 20;
 
-                            // Autoajuste de módulo para intentar encajar en alto disponible (LL - 2*MARGIN)
-                            int maxY = LL - 2 * MARGIN;                    // espacio vertical disponible
-                            int module = Math.Max(1, Math.Min(1, maxY / Math.Max(estimatedModules, 1)));
-                            // Nota: mantenemos 1 dot mínimo; si no entra, habrá que acortar 'codigo'.
+                            // Módulo: 1 dot (mínimo). Si quisieras auto-encajar, podrías calcular:
+                            // int module = Math.Max(1, usableY / Math.Max(estimatedModules, 1));
+                            int module = 1;
 
-                            // Posicionamiento desde la esquina INFERIOR-DERECHA
-                            // - Ancho en X del barcode rotado ≈ H
-                            // - Alto en Y ≈ estimatedModules * module
-                            int barcodeY = estimatedModules * module;
-                            int x = PW - MARGIN - H;
-                            if (x < 0) x = 0;
-                            int y = LL - MARGIN - barcodeY;
-                            if (y < 0) y = 0;
+                            // Altura vertical real del código dentro del ROI
+                            int altoY = estimatedModules * module;
+
+                            // x: pegado a la derecha del ROI (menos margen) y que quepa H
+                            int x = roiX + (ROI_W - H) - MARGIN;
+                            if (x < roiX) x = roiX;
+
+                            // y: apoyado al borde inferior del ROI
+                            int y = roiY + (ROI_H - altoY);
+                            if (y < roiY) y = roiY; // si no entra completo, que arranque arriba del ROI
 
                             sb.Append("^XA")
                             .Append("^PW").Append(PW).Append("^LH0,0")
                             .Append("^LL").Append(LL)
+
+                            // (opcional debug) dibuja el rectángulo del ROI para validar posición
+                            // .Append("^FO").Append(roiX).Append(",").Append(roiY)
+                            // .Append("^GB").Append(ROI_W).Append(",").Append(ROI_H).Append(",1,^FS")
+
                             .Append("^BY").Append(module).Append(",").Append(RATIO).Append(",").Append(H)
                             .Append("^FO").Append(x).Append(",").Append(y)
-                            .Append("^BCB,").Append(H).Append(",N,N,N")  // *** ROTADO 270° (B) ***
+                            .Append("^BCB,").Append(H).Append(",N,N,N") // ROTADO 270°, sin texto humano
                             .Append("^FD").Append(codigo).Append("^FS")
                             .Append("^XZ");
 
                             agregadas++;
                         }
-
 
                         if (agregadas == 0)
                         {
