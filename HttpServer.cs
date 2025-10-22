@@ -174,69 +174,85 @@ namespace PrintAgent
 
                     var json = JsonDocument.Parse(body);
 
-                    if (isZpl)
-                    {
-                        if (!json.RootElement.TryGetProperty("valores", out var arr) ||
-                            arr.ValueKind != JsonValueKind.Array || arr.GetArrayLength() == 0)
+                        if (isZpl)
                         {
-                            res.StatusCode = 400;
-                            await Write(res, new { error = "Falta arreglo 'valores' con codigo_barra" });
+                            if (!json.RootElement.TryGetProperty("valores", out var arr) ||
+                                arr.ValueKind != JsonValueKind.Array || arr.GetArrayLength() == 0)
+                            {
+                                res.StatusCode = 400;
+                                await Write(res, new { error = "Falta arreglo 'valores' con codigo_barra" });
+                                return;
+                            }
+
+                            var sb = new StringBuilder();
+                            int agregadas = 0;
+
+                            foreach (var item in arr.EnumerateArray())
+                            {
+                                if (!item.TryGetProperty("codigo_barra", out var codigoEl)) continue;
+
+                                var raw = (codigoEl.GetString() ?? "").Trim();
+                                if (string.IsNullOrWhiteSpace(raw)) continue;
+
+                                // --- SOLO ÚLTIMOS 6 DÍGITOS ---
+                                // Asumimos numérico; si algún caso trae letras, se ignora.
+                                string code = raw.Length >= 6 ? raw.Substring(raw.Length - 6) : raw.PadLeft(6, '0');
+                                bool numericOnly = true;
+                                foreach (char c in code) { if (c < '0' || c > '9') { numericOnly = false; break; } }
+                                if (!numericOnly) continue;
+
+                                // --- Geometría del apéndice (25x40 mm @ 203 dpi ≈ 8 dots/mm) ---
+                                int PW = 200;        // 25 mm
+                                int LL = 320;        // 40 mm
+
+                                // Alto ~ 1/3 del largo (≈13 mm): 13 * 8 ≈ 104 dots
+                                int barHeight = 104;
+
+                                // Módulo fino para estrechar ancho
+                                int moduleW = 1;     // ^BY1
+                                int quietModules = 10; // quiet zone mínima por lado (recomendado)
+
+                                // Ancho estimado del Code128C con 6 dígitos:
+                                // start(11) + 3 símbolos(3*11=33) + checksum(11) + stop(13) = 68 módulos + quiet(20) = 88 módulos
+                                int symbolModules = 68 + (quietModules * 2); // = 88
+                                int symbolWidthDots = symbolModules * moduleW; // con BY1 → 88 dots (~11 mm)
+
+                                // Márgenes (≈1 mm)
+                                int marginRight = 8;
+                                int marginBottom = 10;
+
+                                // POSICIÓN EN ESQUINA INFERIOR DERECHA
+                                int x = PW - marginRight - symbolWidthDots;
+                                if (x < 0) x = 0;
+                                int y = LL - marginBottom - barHeight;
+                                if (y < 0) y = 0;
+
+                                // --- ZPL: solo barras, rotado 90° (BCR), sin texto humano ---
+                                sb.Append("^XA")
+                                .Append("^PW").Append(PW)
+                                .Append("^LL").Append(LL)
+                                .Append("^LH0,0")
+                                .Append("^BY").Append(moduleW).Append(",2,").Append(barHeight)
+                                .Append("^FO").Append(x).Append(",").Append(y)
+                                .Append("^BCR,").Append(barHeight).Append(",N,N,N")
+                                .Append("^FD").Append(code).Append("^FS")
+                                .Append("^XZ");
+
+                                agregadas++;
+                            }
+
+                            if (agregadas == 0)
+                            {
+                                res.StatusCode = 400;
+                                await Write(res, new { error = "Ningún item contiene 'codigo_barra' válido (últimos 6 dígitos numéricos)" });
+                                return;
+                            }
+
+                            _queue.Add(new PrintJob(JobKind.Zpl, sb.ToString()));
+                            await Write(res, new { status = "queued", count = agregadas });
                             return;
                         }
 
-                        var sb = new StringBuilder();
-                        int agregadas = 0;
-
-                        foreach (var item in arr.EnumerateArray())
-                        {
-                            if (!item.TryGetProperty("codigo_barra", out var codigoEl))
-                                continue;
-
-                            var raw = codigoEl.GetString() ?? "";
-                            if (string.IsNullOrWhiteSpace(raw))
-                                continue;
-
-                            // --- Normaliza: 11 dígitos numéricos -> agrega 0 al frente para Code128C (más compacto)
-                            var code = raw.Trim();
-                            bool numericOnly = true;
-                            foreach (char c in code)
-                                if (c < '0' || c > '9') { numericOnly = false; break; }
-
-                            if (numericOnly && code.Length == 11)
-                                code = "0" + code; // fuerza longitud par (12) para subconjunto C
-
-                            // --- Dimensiones físicas (25x40 mm @203 dpi ≈ 8 dots/mm)
-                            int PW = 200;        // ancho 25 mm
-                            int LL = 320;        // largo 40 mm
-                            int barHeight = 104; // alto ≈ 13 mm (1/3 del largo)
-                            int marginX = 8;     // margen ≈ 1 mm
-                            int marginY = 10;    // margen ≈ 1 mm
-
-                            // --- Genera ZPL: rotado 90°, sin texto humano
-                            sb.Append("^XA")
-                            .Append("^PW").Append(PW)
-                            .Append("^LL").Append(LL)
-                            .Append("^LH0,0")
-                            .Append("^BY1,2,").Append(barHeight)  // módulo fino BY1
-                            .Append("^FO").Append(marginX).Append(",").Append(marginY)
-                            .Append("^BCR,").Append(barHeight).Append(",N,N,N") // rotado (de arriba a abajo)
-                            .Append("^FD").Append(code).Append("^FS")
-                            .Append("^XZ");
-
-                            agregadas++;
-                        }
-
-                        if (agregadas == 0)
-                        {
-                            res.StatusCode = 400;
-                            await Write(res, new { error = "Ningún item contiene 'codigo_barra' válido" });
-                            return;
-                        }
-
-                        _queue.Add(new PrintJob(JobKind.Zpl, sb.ToString()));
-                        await Write(res, new { status = "queued", count = agregadas });
-                        return;
-                    }
 
 
                         //38x20
