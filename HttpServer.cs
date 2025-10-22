@@ -216,33 +216,29 @@ namespace PrintAgent
 
                         foreach (var item in arr.EnumerateArray())
                         {
-                            if (!item.TryGetProperty("codigo_barra", out var codigoEl)) continue;
-                            string codigo = (codigoEl.GetString() ?? "").Trim();
-                            if (codigo.Length == 0) continue;
-
-                            sb.Append("^XA")
-                            .Append("^CI28")
-                            .Append("^PW").Append(PW)
-                            .Append("^LL").Append(LL)
-                            .Append("^LH0,0");
-
-                            if (drawRoi)
+                            // Extrae el código de barras, o usa uno de ejemplo si no está presente
+                            string codigo = "123456789012";
+                            if (item.TryGetProperty("codigo_barra", out var codigoEl))
                             {
-                                sb.Append("^FO").Append(ROI_X).Append(",").Append(ROI_Y)
-                                .Append("^GB").Append(ROI_W).Append(",").Append(ROI_H).Append(",2^FS");
+                                var cod = (codigoEl.GetString() ?? "").Trim();
+                                if (cod.Length > 0) codigo = cod;
                             }
 
-                            // Código de barras vertical (rotado 270°, sin texto auto)
-                            sb.Append("^BY").Append(MODULE).Append(",").Append(RATIO).Append(",").Append(H)
-                            .Append("^FO").Append(X_BAR).Append(",").Append(Y_BAR)
-                            .Append("^BCB,").Append(H).Append(",N,N,N")
-                            .Append("^FD").Append(codigo).Append("^FS");
-
-                            // Texto legible rotado 270°, chico (ajusta 10,8 si querés más/menos)
-                            sb.Append("^FO").Append(X_TXT).Append(",").Append(Y_TXT)
-                            .Append("^A0B,10,8")
-                            .Append("^FD").Append(codigo).Append("^FS")
-                            .Append("^XZ");
+                            sb.Append("^XA")
+                              .Append("^CI28")
+                              .Append("^PW240")
+                              .Append("^LL560")
+                              .Append("^LH0,0")
+                              .Append("^FO112,8")
+                              .Append("^GB120,200,2^FS")
+                              .Append("^BY1,2,10")
+                              .Append("^FO214,16")
+                              .Append("^BCB,10,N,N,N")
+                              .Append("^FD").Append(codigo).Append("^FS")
+                              .Append("^FO200,16")
+                              .Append("^A0B,10,8")
+                              .Append("^FD").Append(codigo).Append("^FS")
+                              .Append("^XZ");
 
                             agregadas++;
                         }
