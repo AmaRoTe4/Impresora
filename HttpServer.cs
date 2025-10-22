@@ -187,38 +187,24 @@ namespace PrintAgent
                             var sb = new StringBuilder();
                             int agregadas = 0;
 
-                            // ===== Layout físico real =====
-                            const double LABEL_W_MM = 30.0; // ANCHO total de la etiqueta
-                            const double LABEL_H_MM = 70.0; // ALTO total  de la etiqueta
-                            const double ROI_W_MM   = 15.0; // ANCHO del área de impresión (ROI)
-                            const double ROI_H_MM   = 25.0; // ALTO  del ROI
+                            // === Layout fijo aprobado (203 dpi) ===
+                            // Etiqueta: 30 x 70 mm  -> ^PW=240, ^LL=560
+                            // ROI (abajo-derecha): ^FO112,352  con tamaño 120x200 (15x25 mm)
+                            // Código: ^BY1,2,10  +  ^FO214,360  +  ^BCB,10,N,N,N
+                            const int PW  = 240;
+                            const int LL  = 560;
+                            const int ROI_X = 112;
+                            const int ROI_Y = 352;
+                            const int ROI_W = 120;
+                            const int ROI_H = 200;
 
-                            // DPI (si tu impresora es 300 dpi, cambia a 300)
-                            int dpi  = 203;
-                            int dpmm = (dpi == 300) ? 12 : 8;
+                            const int MODULE = 1;   // ^BY módulo mínimo
+                            const int RATIO  = 2;   // 2:1
+                            const int H      = 10;  // grosor en X (barras cortas)
+                            const int X_BAR  = 214; // posición aprobada dentro del ROI (derecha)
+                            const int Y_BAR  = 360; // posición aprobada (parte alta del ROI)
 
-                            // Dots de etiqueta y ROI
-                            int PW    = (int)Math.Round(LABEL_W_MM * (double)dpmm);
-                            int LL    = (int)Math.Round(LABEL_H_MM * (double)dpmm);
-                            int ROI_W = (int)Math.Round(ROI_W_MM   * (double)dpmm);
-                            int ROI_H = (int)Math.Round(ROI_H_MM   * (double)dpmm);
-
-                            // Márgen (~1 mm)
-                            int MARGIN = dpmm;
-
-                            // ===== ANCLAJE del ROI =====
-                            // “al inicio” = ARRIBA. “el otro lado” = IZQUIERDA.
-                            // Cambiá estas dos líneas si querés arriba-derecha:
-                            bool anchorTopLeft = true; // true = TOP-LEFT, false = TOP-RIGHT
-
-                            int roiX = anchorTopLeft ? MARGIN : (PW - MARGIN - ROI_W);
-                            int roiY = MARGIN; // siempre arriba
-
-                            // ===== Código de barras rotado 270° y MÁS CORTO =====
-                            // H controla la longitud de las barras (más chico = barras más cortas)
-                            int H = (dpi == 300) ? 18 : 12;             // ajusta 10–16 (203dpi) a gusto
-                            const int RATIO = 2;
-                            int module = 1;                              // mínimo (no bajar)
+                            bool drawRoi = false;   // poner true para ver el rectángulo de validación
 
                             foreach (var item in arr.EnumerateArray())
                             {
@@ -226,22 +212,21 @@ namespace PrintAgent
                                 string codigo = (codigoEl.GetString() ?? "").Trim();
                                 if (codigo.Length == 0) continue;
 
-                                // Posición dentro del ROI
-                                int x = anchorTopLeft
-                                    ? roiX + MARGIN                               // pegado a la izquierda del ROI
-                                    : roiX + (ROI_W - H) - MARGIN;               // pegado a la derecha del ROI
-                                if (x < roiX) x = roiX;
-
-                                int y = roiY + MARGIN;                           // “apoyado” arriba (inicio)
-
                                 sb.Append("^XA")
-                                .Append("^PW").Append(PW).Append("^LH0,0")
+                                .Append("^CI28")
+                                .Append("^PW").Append(PW)
                                 .Append("^LL").Append(LL)
-                                .Append("^FO").Append(roiX).Append(",").Append(roiY)
-                                .Append("^GB").Append(ROI_W).Append(",").Append(ROI_H).Append(",1,^FS")
-                                .Append("^BY").Append(module).Append(",").Append(RATIO).Append(",").Append(H)
-                                .Append("^FO").Append(x).Append(",").Append(y)
-                                .Append("^BCB,").Append(H).Append(",N,N,N") // 270° (vertical), sin texto humano
+                                .Append("^LH0,0");
+
+                                if (drawRoi)
+                                {
+                                    sb.Append("^FO").Append(ROI_X).Append(",").Append(ROI_Y)
+                                    .Append("^GB").Append(ROI_W).Append(",").Append(ROI_H).Append(",2^FS");
+                                }
+
+                                sb.Append("^BY").Append(MODULE).Append(",").Append(RATIO).Append(",").Append(H)
+                                .Append("^FO").Append(X_BAR).Append(",").Append(Y_BAR)
+                                .Append("^BCB,").Append(H).Append(",N,N,N")
                                 .Append("^FD").Append(codigo).Append("^FS")
                                 .Append("^XZ");
 
@@ -259,6 +244,8 @@ namespace PrintAgent
                             await Write(res, new { status = "queued", count = agregadas });
                             return;
                         }
+
+
 
                         //38x20
                         //if (!json.RootElement.TryGetProperty("valores", out var arr) ||
