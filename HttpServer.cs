@@ -233,7 +233,7 @@ namespace PrintAgent
                             }
 
                             // Código de barras vertical (rotado 270°, sin texto auto)
-                            sb.Append("^BY").Append(MODULE).Append(",").Append(RATIO).Append(",").Append(H))
+                            sb.Append("^BY").Append(MODULE).Append(",").Append(RATIO).Append(",").Append(H)
                             .Append("^FO").Append(X_BAR).Append(",").Append(Y_BAR)
                             .Append("^BCB,").Append(H).Append(",N,N,N")
                             .Append("^FD").Append(codigo).Append("^FS");
