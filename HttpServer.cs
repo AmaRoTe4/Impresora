@@ -204,8 +204,8 @@ namespace PrintAgent
                                 string code6 = raw.Length >= 6 ? raw.Substring(raw.Length - 6) : raw.PadLeft(6, '0');
 
                                 // --- geometría en mm (FIJO, no depende de DPI) ---
-                                const double LABEL_W_MM = 25.0;   // ancho total
-                                const double LABEL_H_MM = 70.0;   // alto total
+                                const double LABEL_W_MM = 22.0;   // ancho total
+                                const double LABEL_H_MM = 28.0;   // alto total
                                 const double BLOCK1_H_MM = 30.0;  // primer tramo donde imprimimos
                                 const double MARGIN_R_MM = 1.0;   // margen derecho
                                 const double MARGIN_B_MM = 1.0;   // margen inferior
