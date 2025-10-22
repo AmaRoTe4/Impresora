@@ -175,110 +175,90 @@ namespace PrintAgent
                     var json = JsonDocument.Parse(body);
 
                     if (isZpl)
-                    {
-                        if (!json.RootElement.TryGetProperty("valores", out var arr) ||
-                            arr.ValueKind != JsonValueKind.Array || arr.GetArrayLength() == 0)
                         {
-                            res.StatusCode = 400;
-                            await Write(res, new { error = "Falta arreglo 'valores' con codigo_barra" });
+                            if (!json.RootElement.TryGetProperty("valores", out var arr) ||
+                                arr.ValueKind != JsonValueKind.Array || arr.GetArrayLength() == 0)
+                            {
+                                res.StatusCode = 400;
+                                await Write(res, new { error = "Falta arreglo 'valores' con codigo_barra" });
+                                return;
+                            }
+
+                            var sb = new StringBuilder();
+                            int agregadas = 0;
+
+                            // ===== Layout físico real =====
+                            const double LABEL_W_MM = 30.0; // ANCHO total de la etiqueta
+                            const double LABEL_H_MM = 70.0; // ALTO total  de la etiqueta
+                            const double ROI_W_MM   = 15.0; // ANCHO del área de impresión (ROI)
+                            const double ROI_H_MM   = 25.0; // ALTO  del ROI
+
+                            // DPI (si tu impresora es 300 dpi, cambia a 300)
+                            int dpi  = 203;
+                            int dpmm = (dpi == 300) ? 12 : 8;
+
+                            // Dots de etiqueta y ROI
+                            int PW    = (int)Math.Round(LABEL_W_MM * (double)dpmm);
+                            int LL    = (int)Math.Round(LABEL_H_MM * (double)dpmm);
+                            int ROI_W = (int)Math.Round(ROI_W_MM   * (double)dpmm);
+                            int ROI_H = (int)Math.Round(ROI_H_MM   * (double)dpmm);
+
+                            // Márgen (~1 mm)
+                            int MARGIN = dpmm;
+
+                            // ===== ANCLAJE del ROI =====
+                            // “al inicio” = ARRIBA. “el otro lado” = IZQUIERDA.
+                            // Cambiá estas dos líneas si querés arriba-derecha:
+                            bool anchorTopLeft = true; // true = TOP-LEFT, false = TOP-RIGHT
+
+                            int roiX = anchorTopLeft ? MARGIN : (PW - MARGIN - ROI_W);
+                            int roiY = MARGIN; // siempre arriba
+
+                            // ===== Código de barras rotado 270° y MÁS CORTO =====
+                            // H controla la longitud de las barras (más chico = barras más cortas)
+                            int H = (dpi == 300) ? 18 : 12;             // ajusta 10–16 (203dpi) a gusto
+                            const int RATIO = 2;
+                            int module = 1;                              // mínimo (no bajar)
+
+                            foreach (var item in arr.EnumerateArray())
+                            {
+                                if (!item.TryGetProperty("codigo_barra", out var codigoEl)) continue;
+                                string codigo = (codigoEl.GetString() ?? "").Trim();
+                                if (codigo.Length == 0) continue;
+
+                                // Posición dentro del ROI
+                                int x = anchorTopLeft
+                                    ? roiX + MARGIN                               // pegado a la izquierda del ROI
+                                    : roiX + (ROI_W - H) - MARGIN;               // pegado a la derecha del ROI
+                                if (x < roiX) x = roiX;
+
+                                int y = roiY + MARGIN;                           // “apoyado” arriba (inicio)
+
+                                sb.Append("^XA")
+                                .Append("^PW").Append(PW).Append("^LH0,0")
+                                .Append("^LL").Append(LL)
+                                .Append("^FO").Append(roiX).Append(",").Append(roiY)
+                                .Append("^GB").Append(ROI_W).Append(",").Append(ROI_H).Append(",1,^FS")
+                                .Append("^BY").Append(module).Append(",").Append(RATIO).Append(",").Append(H)
+                                .Append("^FO").Append(x).Append(",").Append(y)
+                                .Append("^BCB,").Append(H).Append(",N,N,N") // 270° (vertical), sin texto humano
+                                .Append("^FD").Append(codigo).Append("^FS")
+                                .Append("^XZ");
+
+                                agregadas++;
+                            }
+
+                            if (agregadas == 0)
+                            {
+                                res.StatusCode = 400;
+                                await Write(res, new { error = "Ningún item con 'codigo_barra' válido" });
+                                return;
+                            }
+
+                            _queue.Add(new PrintJob(JobKind.Zpl, sb.ToString()));
+                            await Write(res, new { status = "queued", count = agregadas });
                             return;
                         }
-
-                        var sb = new StringBuilder();
-                        int agregadas = 0;
-
-                        // ========================
-                        // Layout físico (MM) y DPI
-                        // ========================
-                        const double LABEL_W_MM = 30.0; // ANCHO total
-                        const double LABEL_H_MM = 70.0; // ALTO total
-
-                        const double ROI_W_MM = 15.0;   // ANCHO del ROI (abajo-derecha)
-                        const double ROI_H_MM = 25.0;   // ALTO del ROI
-
-                        // TODO: exponer en /config y leer desde _printerManager o settings
-                        int dpi = 203; // 203 ó 300
-                        int dpmm = (dpi == 300) ? 12 : 8;
-
-                        // Dots etiqueta
-                        int PW = (int)Math.Round(LABEL_W_MM * (double)dpmm);
-                        int LL = (int)Math.Round(LABEL_H_MM * (double)dpmm);
-
-                        // Dots ROI
-                        int ROI_W = (int)Math.Round(ROI_W_MM * (double)dpmm);
-                        int ROI_H = (int)Math.Round(ROI_H_MM * (double)dpmm);
-
-                        // Márgenes (~1mm)
-                        int MARGIN = dpmm;
-
-                        // Origen (esquina sup-izq) del ROI pegado a la esquina INFERIOR-DERECHA
-                        int roiX = PW - MARGIN - ROI_W;
-                        int roiY = LL - MARGIN - ROI_H;
-                        if (roiX < 0) roiX = 0;
-                        if (roiY < 0) roiY = 0;
-
-                        // Parámetros del barcode (rotado 270° con ^BCB)
-                        // H = grosor en X del código ya rotado. Elegimos seguro para que quepa en los 15 mm del ROI.
-                        int H = (dpi == 300) ? 24 : 18;            // 24 dots @300dpi o 18 dots @203dpi
-                        H = Math.Min(H, ROI_W - 2 * MARGIN);       // clamp por seguridad (debe caber en X)
-
-                        const int RATIO = 2;                       // relación 2:1
-                        int usableY = Math.Max(8, ROI_H - 2 * MARGIN); // alto útil vertical dentro del ROI
-
-                        foreach (var item in arr.EnumerateArray())
-                        {
-                            if (!item.TryGetProperty("codigo_barra", out var codigoEl)) continue;
-                            string codigo = (codigoEl.GetString() ?? "").Trim();
-                            if (codigo.Length == 0) continue;
-
-                            // Estimación de módulos Code128 (aprox. + quiet zones)
-                            int len = codigo.Length;
-                            int estimatedModules = 68 + Math.Max(0, (len - 12)) * 11 + 20;
-
-                            // Módulo: 1 dot (mínimo). Si quisieras auto-encajar, podrías calcular:
-                            // int module = Math.Max(1, usableY / Math.Max(estimatedModules, 1));
-                            int module = 1;
-
-                            // Altura vertical real del código dentro del ROI
-                            int altoY = estimatedModules * module;
-
-                            // x: pegado a la derecha del ROI (menos margen) y que quepa H
-                            int x = roiX + (ROI_W - H) - MARGIN;
-                            if (x < roiX) x = roiX;
-
-                            // y: apoyado al borde inferior del ROI
-                            int y = roiY + (ROI_H - altoY);
-                            if (y < roiY) y = roiY; // si no entra completo, que arranque arriba del ROI
-
-                            sb.Append("^XA")
-                            .Append("^PW").Append(PW).Append("^LH0,0")
-                            .Append("^LL").Append(LL)
-
-                            // (opcional debug) dibuja el rectángulo del ROI para validar posición
-                            // .Append("^FO").Append(roiX).Append(",").Append(roiY)
-                            // .Append("^GB").Append(ROI_W).Append(",").Append(ROI_H).Append(",1,^FS")
-
-                            .Append("^BY").Append(module).Append(",").Append(RATIO).Append(",").Append(H)
-                            .Append("^FO").Append(x).Append(",").Append(y)
-                            .Append("^BCB,").Append(H).Append(",N,N,N") // ROTADO 270°, sin texto humano
-                            .Append("^FD").Append(codigo).Append("^FS")
-                            .Append("^XZ");
-
-                            agregadas++;
-                        }
-
-                        if (agregadas == 0)
-                        {
-                            res.StatusCode = 400;
-                            await Write(res, new { error = "Ningún item con 'codigo_barra' válido" });
-                            return;
-                        }
-
-                        _queue.Add(new PrintJob(JobKind.Zpl, sb.ToString()));
-                        await Write(res, new { status = "queued", count = agregadas });
-                        return;
-                    }
-
 
                         //38x20
                         //if (!json.RootElement.TryGetProperty("valores", out var arr) ||
