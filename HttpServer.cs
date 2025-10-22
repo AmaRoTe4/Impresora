@@ -188,15 +188,15 @@ namespace PrintAgent
                         int agregadas = 0;
 
                         // Tamaño físico de la etiqueta
-                        const int WIDTH_MM  = 38;
-                        const int HEIGHT_MM = 20;
+                        const double WIDTH_MM  = 38;
+                        const double HEIGHT_MM = 20;
 
                         // TODO: leer de config/endpoint
                         int dpi  = 203; 
                         int dpmm = (dpi == 300) ? 12 : 8;
 
-                        int PW = (int)Math.Round(WIDTH_MM  * dpmm);
-                        int LL = (int)Math.Round(HEIGHT_MM * dpmm);
+                        int PW = (int)Math.Round(WIDTH_MM  * (double)dpmm);
+                        int LL = (int)Math.Round(HEIGHT_MM * (double)dpmm);
 
                         // Parámetros de código de barras
                         const int MODULE = 1;     // ^BY1 = 1 dot (mínimo)
