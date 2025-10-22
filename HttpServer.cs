@@ -187,27 +187,20 @@ namespace PrintAgent
                         var sb = new StringBuilder();
                         int agregadas = 0;
 
-                        // Tamaño físico de la etiqueta
-                        const double WIDTH_MM  = 38;
-                        const double HEIGHT_MM = 20;
-
-                        // TODO: leer de config/endpoint
-                        int dpi  = 203; 
+                        // Tamaño físico
+                        const int WIDTH_MM  = 38;
+                        const int HEIGHT_MM = 20;
+                        int dpi  = 203;                        // TODO: tomar de config
                         int dpmm = (dpi == 300) ? 12 : 8;
 
                         int PW = (int)Math.Round(WIDTH_MM  * (double)dpmm);
                         int LL = (int)Math.Round(HEIGHT_MM * (double)dpmm);
 
-                        // Parámetros de código de barras
-                        const int MODULE = 1;     // ^BY1 = 1 dot (mínimo)
-                        const int RATIO  = 2;     // relación 2:1
-                        int MARGIN = dpmm;        // ≈1 mm
-                        int H = Math.Min(30, LL - 2 * MARGIN); // altura segura
+                        // Parámetros de barras
+                        int MARGIN = dpmm;                     // ≈1 mm
+                        int H = Math.Min(24, LL - 2 * MARGIN); // más chico que 30 para “achicar” el código
 
-                        // Posición: abajo-izquierda con margen
-                        int x = MARGIN;
-                        int y = LL - MARGIN - H;
-                        if (y < 0) y = 0;
+                        const int RATIO = 2;                   // 2:1 recomendado (no afecta el largo en módulos)
 
                         foreach (var item in arr.EnumerateArray())
                         {
@@ -215,17 +208,36 @@ namespace PrintAgent
                             string codigo = (codigoEl.GetString() ?? "").Trim();
                             if (codigo.Length == 0) continue;
 
+                            // Estimación de módulos (Code128) para dimensionar Y al rotar 270°
+                            int len = codigo.Length;
+                            int estimatedModules = 68 + Math.Max(0, (len - 12)) * 11 + 20; // aprox. + quiet zones
+
+                            // Autoajuste de módulo para intentar encajar en alto disponible (LL - 2*MARGIN)
+                            int maxY = LL - 2 * MARGIN;                    // espacio vertical disponible
+                            int module = Math.Max(1, Math.Min(1, maxY / Math.Max(estimatedModules, 1)));
+                            // Nota: mantenemos 1 dot mínimo; si no entra, habrá que acortar 'codigo'.
+
+                            // Posicionamiento desde la esquina INFERIOR-DERECHA
+                            // - Ancho en X del barcode rotado ≈ H
+                            // - Alto en Y ≈ estimatedModules * module
+                            int barcodeY = estimatedModules * module;
+                            int x = PW - MARGIN - H;
+                            if (x < 0) x = 0;
+                            int y = LL - MARGIN - barcodeY;
+                            if (y < 0) y = 0;
+
                             sb.Append("^XA")
                             .Append("^PW").Append(PW).Append("^LH0,0")
                             .Append("^LL").Append(LL)
-                            .Append("^BY").Append(MODULE).Append(",").Append(RATIO).Append(",").Append(H)
+                            .Append("^BY").Append(module).Append(",").Append(RATIO).Append(",").Append(H)
                             .Append("^FO").Append(x).Append(",").Append(y)
-                            .Append("^BCN,").Append(H).Append(",N,N,N")
+                            .Append("^BCB,").Append(H).Append(",N,N,N")  // *** ROTADO 270° (B) ***
                             .Append("^FD").Append(codigo).Append("^FS")
                             .Append("^XZ");
 
                             agregadas++;
                         }
+
 
                         if (agregadas == 0)
                         {
