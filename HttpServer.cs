@@ -176,76 +176,8 @@ namespace PrintAgent
 
                     if (isZpl)
                     {
-                        if (!json.RootElement.TryGetProperty("valores", out var arr) ||
-                            arr.ValueKind != JsonValueKind.Array || arr.GetArrayLength() == 0)
-                        {
-                            res.StatusCode = 400;
-                            await Write(res, new { error = "Falta arreglo 'valores' con codigo_barra" });
-                            return;
-                        }
-
-                        // Etiqueta física 25x30 mm en 203 dpi
-                        const int PW = 200;   // 25 mm
-                        const int LL = 240;   // 30 mm
-
-                        // Querés MISMAS MEDIDAS que el ejemplo 38x20:
-                        // => module=1, ratio=2, height=30 dots (no lo cambio)
-                        const int MODULE_W   = 1;   // ^BY1
-                        const int RATIO      = 2;   // ,2
-                        const int BAR_HEIGHT = 30;  // ,30
-
-                        // Estimación ancho símbolo (Code128C 6 dígitos): ~88 módulos con quiet
-                        const int SYMBOL_MODULES = 88;
-                        const int SYMBOL_WIDTH   = SYMBOL_MODULES * MODULE_W; // 88 dots
-
-                        // Márgenes reales (~1 mm)
-                        const int MARGIN_RIGHT  = 8;
-                        const int MARGIN_BOTTOM = 8;
-
-                        var sb = new StringBuilder();
-                        int agregadas = 0;
-
-                        foreach (var item in arr.EnumerateArray())
-                        {
-                            if (!item.TryGetProperty("codigo_barra", out var codigoEl)) continue;
-
-                            string raw = (codigoEl.GetString() ?? "").Trim();
-                            if (raw.Length == 0) continue;
-
-                            // SOLO últimos 6 dígitos (si trae menos, pad a 6)
-                            string code6 = raw.Length >= 6 ? raw.Substring(raw.Length - 6) : raw.PadLeft(6, '0');
-
-                            // Posición esquina INFERIOR-DERECHA (mismo lugar actual)
-                            int x = PW - MARGIN_RIGHT - SYMBOL_WIDTH;
-                            if (x < 0) x = 0;
-                            int y = LL - MARGIN_BOTTOM - BAR_HEIGHT;
-                            if (y < 0) y = 0;
-
-                            sb.Append("^XA")
-                            .Append("^PW").Append(PW)
-                            .Append("^LL").Append(LL)
-                            .Append("^LH0,0")
-                            .Append("^BY").Append(MODULE_W).Append(",").Append(RATIO).Append(",").Append(BAR_HEIGHT)
-                            .Append("^FO").Append(x).Append(",").Append(y)
-                            .Append("^BCR,").Append(BAR_HEIGHT).Append(",N,N,N") // rotado 90°, SIN texto
-                            .Append("^FD").Append(code6).Append("^FS")
-                            .Append("^XZ");
-
-                            agregadas++;
-                        }
-
-                        if (agregadas == 0)
-                        {
-                            res.StatusCode = 400;
-                            await Write(res, new { error = "Ningún item con 'codigo_barra' válido (últimos 6)" });
-                            return;
-                        }
-
-                        _queue.Add(new PrintJob(JobKind.Zpl, sb.ToString()));
-                        await Write(res, new { status = "queued", count = agregadas });
-                        return;
+                        
                     }
-
 
 
                         //38x20
