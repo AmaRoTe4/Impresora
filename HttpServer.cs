@@ -174,53 +174,54 @@ namespace PrintAgent
 
                     var json = JsonDocument.Parse(body);
 
-                    if (isZpl){
-                        
+                    if (isZpl)
+                    {
                         if (!json.RootElement.TryGetProperty("valores", out var arr) ||
                             arr.ValueKind != JsonValueKind.Array || arr.GetArrayLength() == 0)
                         {
                             res.StatusCode = 400;
                             await Write(res, new { error = "Falta arreglo 'valores' con codigo_barra" });
-                             return;
+                            return;
                         }
 
                         var sb = new StringBuilder();
                         int agregadas = 0;
 
+                        // Tamaño físico de la etiqueta
+                        const int WIDTH_MM  = 38;
+                        const int HEIGHT_MM = 20;
+
+                        // TODO: leer de config/endpoint
+                        int dpi  = 203; 
+                        int dpmm = (dpi == 300) ? 12 : 8;
+
+                        int PW = (int)Math.Round(WIDTH_MM  * dpmm);
+                        int LL = (int)Math.Round(HEIGHT_MM * dpmm);
+
+                        // Parámetros de código de barras
+                        const int MODULE = 1;     // ^BY1 = 1 dot (mínimo)
+                        const int RATIO  = 2;     // relación 2:1
+                        int MARGIN = dpmm;        // ≈1 mm
+                        int H = Math.Min(30, LL - 2 * MARGIN); // altura segura
+
+                        // Posición: abajo-izquierda con margen
+                        int x = MARGIN;
+                        int y = LL - MARGIN - H;
+                        if (y < 0) y = 0;
+
                         foreach (var item in arr.EnumerateArray())
                         {
-                            if (!item.TryGetProperty("codigo_barra", out var codigoEl))
-                                continue;
+                            if (!item.TryGetProperty("codigo_barra", out var codigoEl)) continue;
+                            string codigo = (codigoEl.GetString() ?? "").Trim();
+                            if (codigo.Length == 0) continue;
 
-                            var raw = codigoEl.GetString() ?? "";
-                            if (string.IsNullOrWhiteSpace(raw))
-                                continue;
-
-                            // --- Normaliza: 11 dígitos numéricos -> agrega 0 al frente para Code128C (más compacto)
-                            var code = raw.Trim();
-                            bool numericOnly = true;
-                            foreach (char c in code)
-                                if (c < '0' || c > '9') { numericOnly = false; break; }
-
-                            if (numericOnly && code.Length == 11)
-                                code = "0" + code; // fuerza longitud par (12) para subconjunto C
-
-                            // --- Dimensiones físicas (25x40 mm @203 dpi ≈ 8 dots/mm)
-                            int PW = 200;        // ancho 25 mm
-                            int LL = 320;        // largo 40 mm
-                            int barHeight = 104; // alto ≈ 13 mm (1/3 del largo)
-                            int marginX = 8;     // margen ≈ 1 mm
-                            int marginY = 10;    // margen ≈ 1 mm
-
-                            // --- Genera ZPL: rotado 90°, sin texto humano
                             sb.Append("^XA")
-                            .Append("^PW").Append(PW)
+                            .Append("^PW").Append(PW).Append("^LH0,0")
                             .Append("^LL").Append(LL)
-                            .Append("^LH0,0")
-                            .Append("^BY1,2,").Append(barHeight)  // módulo fino BY1
-                            .Append("^FO").Append(marginX).Append(",").Append(marginY)
-                            .Append("^BCR,").Append(barHeight).Append(",N,N,N") // rotado (de arriba a abajo)
-                            .Append("^FD").Append(code).Append("^FS")
+                            .Append("^BY").Append(MODULE).Append(",").Append(RATIO).Append(",").Append(H)
+                            .Append("^FO").Append(x).Append(",").Append(y)
+                            .Append("^BCN,").Append(H).Append(",N,N,N")
+                            .Append("^FD").Append(codigo).Append("^FS")
                             .Append("^XZ");
 
                             agregadas++;
@@ -229,7 +230,7 @@ namespace PrintAgent
                         if (agregadas == 0)
                         {
                             res.StatusCode = 400;
-                            await Write(res, new { error = "Ningún item contiene 'codigo_barra' válido" });
+                            await Write(res, new { error = "Ningún item con 'codigo_barra' válido" });
                             return;
                         }
 
@@ -237,7 +238,8 @@ namespace PrintAgent
                         await Write(res, new { status = "queued", count = agregadas });
                         return;
                     }
-                    
+
+
                         //38x20
                         //if (!json.RootElement.TryGetProperty("valores", out var arr) ||
                         //    arr.ValueKind != JsonValueKind.Array || arr.GetArrayLength() == 0)
