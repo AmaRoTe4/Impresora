@@ -175,146 +175,90 @@ namespace PrintAgent
                     var json = JsonDocument.Parse(body);
 
                     if (isZpl)
+                    {
+                        if (!json.RootElement.TryGetProperty("valores", out var arr) ||
+                            arr.ValueKind != JsonValueKind.Array || arr.GetArrayLength() == 0)
                         {
-                            if (!json.RootElement.TryGetProperty("valores", out var arr) ||
-                                arr.ValueKind != JsonValueKind.Array || arr.GetArrayLength() == 0)
-                            {
-                                res.StatusCode = 400;
-                                await Write(res, new { error = "Falta arreglo 'valores' con codigo_barra" });
-                                return;
-                            }
-
-                            var sb = new StringBuilder();
-                            int agregadas = 0;
-
-                            // === Layout fijo aprobado (203 dpi) ===
-                            // Etiqueta: 30 x 70 mm  -> ^PW=240, ^LL=560
-                            // ROI (abajo-derecha): ^FO112,352  con tamaño 120x200 (15x25 mm)
-                            // Código: ^BY1,2,10  +  ^FO214,360  +  ^BCB,10,N,N,N
-                            const int PW  = 240;
-                            const int LL  = 560;
-                            const int ROI_X = 112;
-                            const int ROI_Y = 352;
-                            const int ROI_W = 120;
-                            const int ROI_H = 200;
-
-                            const int MODULE = 1;   // ^BY módulo mínimo
-                            const int RATIO  = 2;   // 2:1
-                            const int H      = 10;  // grosor en X (barras cortas)
-                            const int X_BAR  = 214; // posición aprobada dentro del ROI (derecha)
-                            const int Y_BAR  = 360; // posición aprobada (parte alta del ROI)
-
-                            bool drawRoi = false;   // poner true para ver el rectángulo de validación
-
-                            foreach (var item in arr.EnumerateArray())
-                            {
-                                if (!item.TryGetProperty("codigo_barra", out var codigoEl)) continue;
-                                string codigo = (codigoEl.GetString() ?? "").Trim();
-                                if (codigo.Length == 0) continue;
-
-                                sb.Append("^XA")
-                                .Append("^CI28")
-                                .Append("^PW").Append(PW)
-                                .Append("^LL").Append(LL)
-                                .Append("^LH0,0");
-
-                                if (drawRoi)
-                                {
-                                    sb.Append("^FO").Append(ROI_X).Append(",").Append(ROI_Y)
-                                    .Append("^GB").Append(ROI_W).Append(",").Append(ROI_H).Append(",2^FS");
-                                }
-
-                                sb.Append("^BY").Append(MODULE).Append(",").Append(RATIO).Append(",").Append(H)
-                                .Append("^FO").Append(X_BAR).Append(",").Append(Y_BAR)
-                                .Append("^BCB,").Append(H).Append(",N,N,N")
-                                .Append("^FD").Append(codigo).Append("^FS")
-                                .Append("^XZ");
-
-                                agregadas++;
-                            }
-
-                            if (agregadas == 0)
-                            {
-                                res.StatusCode = 400;
-                                await Write(res, new { error = "Ningún item con 'codigo_barra' válido" });
-                                return;
-                            }
-
-                            _queue.Add(new PrintJob(JobKind.Zpl, sb.ToString()));
-                            await Write(res, new { status = "queued", count = agregadas });
+                            res.StatusCode = 400;
+                            await Write(res, new { error = "Falta arreglo 'valores' con codigo_barra" });
                             return;
                         }
 
+                        var sb = new StringBuilder();
+                        int agregadas = 0;
 
+                        // ===== Layout fijo (203 dpi) =====
+                        // Etiqueta total: 30 x 70 mm  -> ^PW=240, ^LL=560
+                        // Bandera IZQUIERDA (ROI): 15 x 25 mm  -> origen ^FO8,8 (en dots)
+                        // Código: vertical (Code128, rotado 270°) + texto rotado
+                        const int PW = 240;
+                        const int LL = 560;
 
-                        //38x20
-                        //if (!json.RootElement.TryGetProperty("valores", out var arr) ||
-                        //    arr.ValueKind != JsonValueKind.Array || arr.GetArrayLength() == 0)
-                        //{
-                        //    res.StatusCode = 400;
-                        //    await Write(res, new { error = "Falta arreglo 'valores' con nombre y codigo_barra" });
-                        //    return;
-                        //}
+                        const int ROI_X = 8;     // x de la bandera izquierda
+                        const int ROI_Y = 8;     // y (borde de salida)
+                        const int ROI_W = 120;   // 15 mm * 8 dpmm
+                        const int ROI_H = 200;   // 25 mm * 8 dpmm
 
-                        //var sb = new StringBuilder();
-                        ////38X20
-                        //foreach (var item in arr.EnumerateArray())
-                        //{
-                        //    // --- datos base ---------------------------------------------------------
-                        //    var nombre      = item.GetProperty("nombre").GetString()        ?? "";
-                        //    var codigo      = item.GetProperty("codigo_barra").GetString()  ?? "";
-                        //    var precio      = item.GetProperty("precio").GetString()        ?? "";
-                        //    var usePrecioEl = item.GetProperty("use_precio").GetString()    ?? "false";
+                        const int MODULE = 1;    // ^BY módulo mínimo
+                        const int RATIO  = 2;    // relación 2:1
+                        const int H      = 10;   // grosor en X (barras cortas)
 
-                        //    // --- valida si debe mostrar precio -------------------------------------
-                        //    var mostrarPrecio = bool.TryParse(usePrecioEl, out var flag) && flag;
+                        // Posicionamiento del código dentro del ROI (pegado a la derecha y arriba)
+                        // x = ROI_X + ROI_W - H - margen(8)
+                        const int X_BAR = ROI_X + ROI_W - H - 8; // 8 dots ~ 1 mm
+                        const int Y_BAR = ROI_Y + 8;
 
-                        //    // —–– limita largo del precio para que nunca desborde (≈16 carac. máx.) –
-                        //    if (precio.Length > 16) precio = precio[..16];
+                        // Posicionamiento del texto legible (a la izquierda del código, mismo y)
+                        const int X_TXT = X_BAR - 14; // 14 dots a la izquierda del código
+                        const int Y_TXT = Y_BAR;
 
-                        //    // --- plantilla ZPL ------------------------------------------------------
-                        //    sb.Append("^XA")                        // inicio etiqueta
-                        //    .Append("^PW300^LH0,0")               // 300 dots (≈37,5 mm de ancho útil)
-                        //    .Append("^BY1,2,30")                  // ancho barras, ratio, alto 30
-                        //    .Append("^FO20,10^BCN,30,N,N,N")      // barcode sin texto auto
-                        //    .Append("^FD").Append(codigo).Append("^FS")
-                        //    .Append("^FO20,45")                   // nombre bajo el código de barras
-                        //    .Append("^FB260,3,0,L,0")             // bloque 260 px, máx. 3 líneas, alineado izq.
-                        //    .Append("^A0N,16,16^FD").Append(nombre).Append("^FS");
+                        bool drawRoi = false; // poner true para ver el rectángulo de la bandera
 
-                        //    // --- precio (opcional, centrado) ---------------------------------------
-                        //    if (mostrarPrecio)
-                        //    {
-                        //        sb.Append("^FO20,70")               // posición vertical
-                        //        .Append("^FB260,1,0,C,0")         // bloque 260 px, 1 línea, alineado CENTRO
-                        //        .Append("^A0N,16,16^FD").Append(precio).Append("^FS");
-                        //    }
+                        foreach (var item in arr.EnumerateArray())
+                        {
+                            if (!item.TryGetProperty("codigo_barra", out var codigoEl)) continue;
+                            string codigo = (codigoEl.GetString() ?? "").Trim();
+                            if (codigo.Length == 0) continue;
 
-                        //    sb.Append("^XZ");                       // fin etiqueta
-                        //}
+                            sb.Append("^XA")
+                            .Append("^CI28")
+                            .Append("^PW").Append(PW)
+                            .Append("^LL").Append(LL)
+                            .Append("^LH0,0");
 
+                            if (drawRoi)
+                            {
+                                sb.Append("^FO").Append(ROI_X).Append(",").Append(ROI_Y)
+                                .Append("^GB").Append(ROI_W).Append(",").Append(ROI_H).Append(",2^FS");
+                            }
 
-                        //_queue.Add(new PrintJob(JobKind.Zpl, sb.ToString()));
-                        //await Write(res, new { status = "queued" });
-                        //return;
+                            // Código de barras vertical (rotado 270°, sin texto auto)
+                            sb.Append("^BY").Append(MODULE).Append(",").Append(RATIO).Append(",").Append(H))
+                            .Append("^FO").Append(X_BAR).Append(",").Append(Y_BAR)
+                            .Append("^BCB,").Append(H).Append(",N,N,N")
+                            .Append("^FD").Append(codigo).Append("^FS");
 
-                    
-                    //50X25
-                    //foreach (var item in arr.EnumerateArray())
-                    //{
-                    //    var nombre = item.GetProperty("nombre").GetString() ?? "";
-                    //    var codigo = item.GetProperty("codigo_barra").GetString() ?? "";
+                            // Texto legible rotado 270°, chico (ajusta 10,8 si querés más/menos)
+                            sb.Append("^FO").Append(X_TXT).Append(",").Append(Y_TXT)
+                            .Append("^A0B,10,8")
+                            .Append("^FD").Append(codigo).Append("^FS")
+                            .Append("^XZ");
 
-                    //    sb.Append("^XA")
-                    //    .Append("^PW300^LH0,0") // Ancho máximo ≈ 38mm
-                    //    .Append("^BY2,2,30")     // Código de barras más bajo
-                    //    .Append("^FO20,10^BCN,30,Y,N,N^FD").Append(codigo).Append("^FS") // Código de barras
-                    //    .Append("^FO20,50^A0N,16,16^FD").Append(nombre).Append("^FS")    // Nombre del producto
-                    //    .Append("^XZ");
-                    //}
-                    //_queue.Add(new PrintJob(JobKind.Zpl, sb.ToString()));
-                    //await Write(res, new { status = "queued" });
-                    //return;
+                            agregadas++;
+                        }
+
+                        if (agregadas == 0)
+                        {
+                            res.StatusCode = 400;
+                            await Write(res, new { error = "Ningún item con 'codigo_barra' válido" });
+                            return;
+                        }
+
+                        _queue.Add(new PrintJob(JobKind.Zpl, sb.ToString()));
+                        await Write(res, new { status = "queued", count = agregadas });
+                        return;
+                    }
+
 
                     if (isText)
                     {
