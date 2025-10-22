@@ -184,61 +184,79 @@ namespace PrintAgent
                             return;
                         }
 
-                        var sb = new StringBuilder();
-                        int agregadas = 0;
+                        // ===== Layout fijo 203 dpi =====
+                        const int PW = 240;  // 30 mm
+                        const int LL = 560;  // 70 mm
 
-                        // ===== Layout fijo (203 dpi) =====
-                        // Etiqueta total: 30 x 70 mm  -> ^PW=240, ^LL=560
-                        // Bandera IZQUIERDA (ROI): 15 x 25 mm  -> origen ^FO8,8 (en dots)
-                        // Código: vertical (Code128, rotado 270°) + texto rotado
-                        const int PW = 240;
-                        const int LL = 560;
+                        // Bandera IZQUIERDA inferior (15x25 mm) → ROI (x=8,y=352) tamaño 120x200
+                        const int ROI_X = 8, ROI_Y = 352, ROI_W = 120, ROI_H = 200;
 
-                        const int ROI_X = 8;     // x de la bandera izquierda
-                        const int ROI_Y = 8;     // y (borde de salida)
-                        const int ROI_W = 120;   // 15 mm * 8 dpmm
-                        const int ROI_H = 200;   // 25 mm * 8 dpmm
-
-                        const int MODULE = 1;    // ^BY módulo mínimo
-                        const int RATIO  = 2;    // relación 2:1
-                        const int H      = 10;   // grosor en X (barras cortas)
-
-                        // Posicionamiento del código dentro del ROI (pegado a la derecha y arriba)
-                        // x = ROI_X + ROI_W - H - margen(8)
-                        const int X_BAR = ROI_X + ROI_W - H - 8; // 8 dots ~ 1 mm
-                        const int Y_BAR = ROI_Y + 8;
-
-                        // Posicionamiento del texto legible (a la izquierda del código, mismo y)
-                        const int X_TXT = X_BAR - 14; // 14 dots a la izquierda del código
-                        const int Y_TXT = Y_BAR;
+                        // EAN-8 “grande y centrado” (acordado)
+                        // módulo=2 (legible), altura=34; centrado visual: X=66, Y=376
+                        const int MOD = 2, RATIO = 2, H = 34;
+                        const int X_BAR = 66, Y_BAR = 376;         // centro dentro del ROI
+                        const int X_TXT = 46, Y_TXT = 376;         // texto a la izquierda del código
 
                         bool drawRoi = false; // poner true para ver el rectángulo de la bandera
 
+                        string ToEan8(string raw)
+                        {
+                            // 1) dejar sólo dígitos
+                            var digitsOnly = new string((raw ?? "").Where(char.IsDigit).ToArray());
+
+                            // 2) tomamos los últimos 6; si hay menos, completamos a la izquierda
+                            string last6 = digitsOnly.Length >= 6
+                                ? digitsOnly.Substring(digitsOnly.Length - 6, 6)
+                                : digitsOnly.PadLeft(6, '0');
+
+                            // 3) EAN-8 requiere 7 datos + 1 check → anteponemos '0' para formar 7
+                            string data7 = "0" + last6;
+
+                            // 4) dígito verificador EAN-8
+                            int sum = 0;
+                            for (int i = 0; i < 7; i++)
+                            {
+                                int d = data7[i] - '0';
+                                // posiciones 1,3,5,7 (i=0,2,4,6) pesan x3
+                                sum += ((i % 2) == 0) ? d * 3 : d;
+                            }
+                            int check = (10 - (sum % 10)) % 10;
+
+                            return data7 + check.ToString();
+                        }
+
+                        var sb = new StringBuilder();
+                        int agregadas = 0;
+
                         foreach (var item in arr.EnumerateArray())
                         {
-                            // Extrae el código de barras, o usa uno de ejemplo si no está presente
-                            string codigo = "123456789012";
-                            if (item.TryGetProperty("codigo_barra", out var codigoEl))
-                            {
-                                var cod = (codigoEl.GetString() ?? "").Trim();
-                                if (cod.Length > 0) codigo = cod;
-                            }
+                            string input = item.TryGetProperty("codigo_barra", out var el) ? (el.GetString() ?? "") : "";
+                            string ean8 = ToEan8(input);
 
                             sb.Append("^XA")
-                              .Append("^CI28")
-                              .Append("^PW240")
-                              .Append("^LL560")
-                              .Append("^LH0,0")
-                              .Append("^FO112,8")
-                              .Append("^GB120,200,2^FS")
-                              .Append("^BY1,2,10")
-                              .Append("^FO214,16")
-                              .Append("^BCB,10,N,N,N")
-                              .Append("^FD").Append(codigo).Append("^FS")
-                              .Append("^FO200,16")
-                              .Append("^A0B,10,8")
-                              .Append("^FD").Append(codigo).Append("^FS")
-                              .Append("^XZ");
+                            .Append("^CI28")
+                            .Append("^PW").Append(PW)
+                            .Append("^LL").Append(LL)
+                            .Append("^LH0,0");
+
+                            if (drawRoi)
+                            {
+                                sb.Append("^FO").Append(ROI_X).Append(",").Append(ROI_Y)
+                                .Append("^GB").Append(ROI_W).Append(",").Append(ROI_H).Append(",2^FS");
+                            }
+
+                            // EAN-8 vertical, centrado y grande
+                            sb.Append("^BY").Append(MOD).Append(",").Append(RATIO).Append(",").Append(H)
+                            .Append("^FO").Append(X_BAR).Append(",").Append(Y_BAR)
+                            .Append("^B8B,").Append(H).Append(",N")
+                            .Append("^FD").Append(ean8).Append("^FS")
+
+                            // Texto rotado (un poco más grande)
+                            .Append("^FO").Append(X_TXT).Append(",").Append(Y_TXT)
+                            .Append("^A0B,22,18")
+                            .Append("^FD").Append(ean8).Append("^FS")
+
+                            .Append("^XZ");
 
                             agregadas++;
                         }
@@ -254,6 +272,7 @@ namespace PrintAgent
                         await Write(res, new { status = "queued", count = agregadas });
                         return;
                     }
+
 
 
                     if (isText)
