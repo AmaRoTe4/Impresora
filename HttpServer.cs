@@ -174,53 +174,53 @@ namespace PrintAgent
 
                     var json = JsonDocument.Parse(body);
 
-                    if (isZpl)
-                    {
+                    if (isZpl){
+                        
                         if (!json.RootElement.TryGetProperty("valores", out var arr) ||
                             arr.ValueKind != JsonValueKind.Array || arr.GetArrayLength() == 0)
                         {
                             res.StatusCode = 400;
                             await Write(res, new { error = "Falta arreglo 'valores' con codigo_barra" });
-                            return;
+                             return;
                         }
 
                         var sb = new StringBuilder();
                         int agregadas = 0;
 
-                        // Layout 38x20 que ya te funciona
-                        const int PW = 300;    // ≈ 38 mm
-                        const int LL = 160;    // 20 mm (necesario para ubicar "abajo")
-                        const int MODULE = 1;  // ^BY1
-                        const int RATIO  = 2;  // ,2
-                        const int H      = 30; // altura del barcode = 30 (igual a tu ejemplo)
-                        const int MARGIN = 8;  // ~1 mm
-
                         foreach (var item in arr.EnumerateArray())
                         {
-                            if (!item.TryGetProperty("codigo_barra", out var codigoEl)) continue;
-                            string codigo = (codigoEl.GetString() ?? "").Trim();
-                            if (codigo.Length == 0) continue;
+                            if (!item.TryGetProperty("codigo_barra", out var codigoEl))
+                                continue;
 
-                            // Estima ancho en módulos para Code128 con BY1 (con quiet zones):
-                            // base 68 módulos (Start + N símbolos + checksum + stop) + 20 quiet.
-                            // Aproximamos +11 módulos por cada símbolo adicional >12.
-                            int len = codigo.Length;
-                            int symbolModules = 68 + Math.Max(0, (len - 12)) * 11 + 20;
-                            int symbolWidthEst = symbolModules * MODULE; // BY1 => módulos = dots
+                            var raw = codigoEl.GetString() ?? "";
+                            if (string.IsNullOrWhiteSpace(raw))
+                                continue;
 
-                            // Esquina inferior-derecha con margen
-                            int x = PW - MARGIN - symbolWidthEst;
-                            if (x < 0) x = 0;
-                            int y = LL - MARGIN - H;
-                            if (y < 0) y = 0;
+                            // --- Normaliza: 11 dígitos numéricos -> agrega 0 al frente para Code128C (más compacto)
+                            var code = raw.Trim();
+                            bool numericOnly = true;
+                            foreach (char c in code)
+                                if (c < '0' || c > '9') { numericOnly = false; break; }
 
+                            if (numericOnly && code.Length == 11)
+                                code = "0" + code; // fuerza longitud par (12) para subconjunto C
+
+                            // --- Dimensiones físicas (25x40 mm @203 dpi ≈ 8 dots/mm)
+                            int PW = 200;        // ancho 25 mm
+                            int LL = 320;        // largo 40 mm
+                            int barHeight = 104; // alto ≈ 13 mm (1/3 del largo)
+                            int marginX = 8;     // margen ≈ 1 mm
+                            int marginY = 10;    // margen ≈ 1 mm
+
+                            // --- Genera ZPL: rotado 90°, sin texto humano
                             sb.Append("^XA")
-                            .Append("^PW").Append(PW).Append("^LH0,0")
+                            .Append("^PW").Append(PW)
                             .Append("^LL").Append(LL)
-                            .Append("^BY").Append(MODULE).Append(",").Append(RATIO).Append(",").Append(H)
-                            .Append("^FO").Append(x).Append(",").Append(y)
-                            .Append("^BCN,").Append(H).Append(",N,N,N") // MISMO barcode que tu ejemplo (no rotado)
-                            .Append("^FD").Append(codigo).Append("^FS")
+                            .Append("^LH0,0")
+                            .Append("^BY1,2,").Append(barHeight)  // módulo fino BY1
+                            .Append("^FO").Append(marginX).Append(",").Append(marginY)
+                            .Append("^BCR,").Append(barHeight).Append(",N,N,N") // rotado (de arriba a abajo)
+                            .Append("^FD").Append(code).Append("^FS")
                             .Append("^XZ");
 
                             agregadas++;
@@ -229,7 +229,7 @@ namespace PrintAgent
                         if (agregadas == 0)
                         {
                             res.StatusCode = 400;
-                            await Write(res, new { error = "Ningún item con 'codigo_barra' válido" });
+                            await Write(res, new { error = "Ningún item contiene 'codigo_barra' válido" });
                             return;
                         }
 
@@ -237,10 +237,7 @@ namespace PrintAgent
                         await Write(res, new { status = "queued", count = agregadas });
                         return;
                     }
-
-
-
-
+                    
                         //38x20
                         //if (!json.RootElement.TryGetProperty("valores", out var arr) ||
                         //    arr.ValueKind != JsonValueKind.Array || arr.GetArrayLength() == 0)
