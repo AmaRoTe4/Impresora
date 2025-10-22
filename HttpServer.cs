@@ -174,97 +174,79 @@ namespace PrintAgent
 
                     var json = JsonDocument.Parse(body);
 
-                        if (isZpl)
+                    if (isZpl)
+                    {
+                        if (!json.RootElement.TryGetProperty("valores", out var arr) ||
+                            arr.ValueKind != JsonValueKind.Array || arr.GetArrayLength() == 0)
                         {
-                            // modo dry-run: /print_zpl?dry=1 --> NO imprime, solo devuelve el ZPL
-                            bool dry = ctx.Request.Url.Query?.Contains("dry=1") == true;
-
-                            if (!json.RootElement.TryGetProperty("valores", out var arr) ||
-                                arr.ValueKind != JsonValueKind.Array || arr.GetArrayLength() == 0)
-                            {
-                                res.StatusCode = 400;
-                                await Write(res, new { error = "Falta arreglo 'valores' con codigo_barra" });
-                                return;
-                            }
-
-                            // --- utilidades ---
-                            static int DotsFromMm(double mm, int dpi = 203) => (int)Math.Round(mm * dpi / 25.4);
-
-                            var zpl = new StringBuilder();
-                            int agregadas = 0;
-
-                            foreach (var item in arr.EnumerateArray())
-                            {
-                                if (!item.TryGetProperty("codigo_barra", out var codigoEl)) continue;
-
-                                string raw = (codigoEl.GetString() ?? "").Trim();
-                                if (raw.Length == 0) continue;
-
-                                // últimos 6 dígitos (si trae menos, pad-left con 0)
-                                string code6 = raw.Length >= 6 ? raw.Substring(raw.Length - 6) : raw.PadLeft(6, '0');
-
-                                // --- geometría en mm (FIJO, no depende de DPI) ---
-                                const double LABEL_W_MM = 22.0;   // ancho total
-                                const double LABEL_H_MM = 28.0;   // alto total
-                                const double BLOCK1_H_MM = 30.0;  // primer tramo donde imprimimos
-                                const double MARGIN_R_MM = 1.0;   // margen derecho
-                                const double MARGIN_B_MM = 1.0;   // margen inferior
-
-                                // Alto visual ~ 1/3 de 30mm ≈ 10 mm
-                                int barHeightDots = DotsFromMm(10.0, 203); // si tu equipo fuese 300 dpi, cambia 203 -> 300
-
-                                // ^BY módulo mínimo (angosto). Si lo querés apenas más ancho: usa ^BY1,3 o ^BY2,2
-                                int moduleW = 1;     // módulo = 1 dot
-                                int ratio    = 2;
-
-                                // Estimación del ancho (Code128C, 6 dígitos):
-                                // ~68 módulos + quiet 20 = 88 módulos -> 88 * moduleW dots
-                                int estimatedModules = 88;
-                                // Convertimos ese ancho a mm para posicionar usando mm
-                                double symbolWidthMM = (estimatedModules * 25.4) / 203.0; // 203 dpi por defecto
-
-                                // Coordenadas en mm (esquina inferior-derecha del BLOQUE1)
-                                double x_mm = LABEL_W_MM - MARGIN_R_MM - symbolWidthMM;
-                                if (x_mm < 0) x_mm = 0;
-                                double y_mm = BLOCK1_H_MM - MARGIN_B_MM - 10.0; // 10mm de alto visual
-
-                                // --- ZPL ---
-                                zpl.Append("^XA")
-                                .Append("^MUM")                         // usar milímetros
-                                .Append("^PW").Append(LABEL_W_MM)       // ancho en mm
-                                .Append("^LL").Append(LABEL_H_MM)       // largo total 70 mm
-                                .Append("^LH0,0")
-                                .Append("^BY").Append(moduleW).Append(",").Append(ratio).Append(",").Append(barHeightDots)
-                                .Append("^FO").Append(x_mm.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture))
-                                                .Append(",")
-                                                .Append(y_mm.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture))
-                                .Append("^BCR,").Append(barHeightDots).Append(",N,N,N") // rotado 90°, sin texto
-                                .Append("^FD").Append(code6).Append("^FS")
-                                .Append("^XZ");
-
-                                agregadas++;
-                            }
-
-                            if (agregadas == 0)
-                            {
-                                res.StatusCode = 400;
-                                await Write(res, new { error = "Ningún item válido con 'codigo_barra' (últimos 6)" });
-                                return;
-                            }
-
-                            string zplStr = zpl.ToString();
-
-                            if (dry)
-                            {
-                                // no imprimimos: devolvemos el ZPL para inspección rápida
-                                await Write(res, new { status = "dry_run", zpl = zplStr });
-                                return;
-                            }
-
-                            _queue.Add(new PrintJob(JobKind.Zpl, zplStr));
-                            await Write(res, new { status = "queued", count = agregadas });
+                            res.StatusCode = 400;
+                            await Write(res, new { error = "Falta arreglo 'valores' con codigo_barra" });
                             return;
                         }
+
+                        // Etiqueta física 25x30 mm en 203 dpi
+                        const int PW = 200;   // 25 mm
+                        const int LL = 240;   // 30 mm
+
+                        // Querés MISMAS MEDIDAS que el ejemplo 38x20:
+                        // => module=1, ratio=2, height=30 dots (no lo cambio)
+                        const int MODULE_W   = 1;   // ^BY1
+                        const int RATIO      = 2;   // ,2
+                        const int BAR_HEIGHT = 30;  // ,30
+
+                        // Estimación ancho símbolo (Code128C 6 dígitos): ~88 módulos con quiet
+                        const int SYMBOL_MODULES = 88;
+                        const int SYMBOL_WIDTH   = SYMBOL_MODULES * MODULE_W; // 88 dots
+
+                        // Márgenes reales (~1 mm)
+                        const int MARGIN_RIGHT  = 8;
+                        const int MARGIN_BOTTOM = 8;
+
+                        var sb = new StringBuilder();
+                        int agregadas = 0;
+
+                        foreach (var item in arr.EnumerateArray())
+                        {
+                            if (!item.TryGetProperty("codigo_barra", out var codigoEl)) continue;
+
+                            string raw = (codigoEl.GetString() ?? "").Trim();
+                            if (raw.Length == 0) continue;
+
+                            // SOLO últimos 6 dígitos (si trae menos, pad a 6)
+                            string code6 = raw.Length >= 6 ? raw.Substring(raw.Length - 6) : raw.PadLeft(6, '0');
+
+                            // Posición esquina INFERIOR-DERECHA (mismo lugar actual)
+                            int x = PW - MARGIN_RIGHT - SYMBOL_WIDTH;
+                            if (x < 0) x = 0;
+                            int y = LL - MARGIN_BOTTOM - BAR_HEIGHT;
+                            if (y < 0) y = 0;
+
+                            sb.Append("^XA")
+                            .Append("^PW").Append(PW)
+                            .Append("^LL").Append(LL)
+                            .Append("^LH0,0")
+                            .Append("^BY").Append(MODULE_W).Append(",").Append(RATIO).Append(",").Append(BAR_HEIGHT)
+                            .Append("^FO").Append(x).Append(",").Append(y)
+                            .Append("^BCR,").Append(BAR_HEIGHT).Append(",N,N,N") // rotado 90°, SIN texto
+                            .Append("^FD").Append(code6).Append("^FS")
+                            .Append("^XZ");
+
+                            agregadas++;
+                        }
+
+                        if (agregadas == 0)
+                        {
+                            res.StatusCode = 400;
+                            await Write(res, new { error = "Ningún item con 'codigo_barra' válido (últimos 6)" });
+                            return;
+                        }
+
+                        _queue.Add(new PrintJob(JobKind.Zpl, sb.ToString()));
+                        await Write(res, new { status = "queued", count = agregadas });
+                        return;
+                    }
+
+
 
                         //38x20
                         //if (!json.RootElement.TryGetProperty("valores", out var arr) ||
