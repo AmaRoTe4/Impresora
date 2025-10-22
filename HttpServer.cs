@@ -176,6 +176,9 @@ namespace PrintAgent
 
                         if (isZpl)
                         {
+                            // modo dry-run: /print_zpl?dry=1 --> NO imprime, solo devuelve el ZPL
+                            bool dry = ctx.Request.Url.Query?.Contains("dry=1") == true;
+
                             if (!json.RootElement.TryGetProperty("valores", out var arr) ||
                                 arr.ValueKind != JsonValueKind.Array || arr.GetArrayLength() == 0)
                             {
@@ -184,58 +187,59 @@ namespace PrintAgent
                                 return;
                             }
 
-                            var sb = new StringBuilder();
+                            // --- utilidades ---
+                            static int DotsFromMm(double mm, int dpi = 203) => (int)Math.Round(mm * dpi / 25.4);
+
+                            var zpl = new StringBuilder();
                             int agregadas = 0;
 
                             foreach (var item in arr.EnumerateArray())
                             {
                                 if (!item.TryGetProperty("codigo_barra", out var codigoEl)) continue;
 
-                                var raw = (codigoEl.GetString() ?? "").Trim();
-                                if (string.IsNullOrWhiteSpace(raw)) continue;
+                                string raw = (codigoEl.GetString() ?? "").Trim();
+                                if (raw.Length == 0) continue;
 
-                                // --- SOLO ÚLTIMOS 6 DÍGITOS ---
-                                // Asumimos numérico; si algún caso trae letras, se ignora.
-                                string code = raw.Length >= 6 ? raw.Substring(raw.Length - 6) : raw.PadLeft(6, '0');
-                                bool numericOnly = true;
-                                foreach (char c in code) { if (c < '0' || c > '9') { numericOnly = false; break; } }
-                                if (!numericOnly) continue;
+                                // últimos 6 dígitos (si trae menos, pad-left con 0)
+                                string code6 = raw.Length >= 6 ? raw.Substring(raw.Length - 6) : raw.PadLeft(6, '0');
 
-                                // --- Geometría del apéndice (25x40 mm @ 203 dpi ≈ 8 dots/mm) ---
-                                int PW = 200;        // 25 mm
-                                int LL = 320;        // 40 mm
+                                // --- geometría en mm (FIJO, no depende de DPI) ---
+                                const double LABEL_W_MM = 25.0;   // ancho total
+                                const double LABEL_H_MM = 70.0;   // alto total
+                                const double BLOCK1_H_MM = 30.0;  // primer tramo donde imprimimos
+                                const double MARGIN_R_MM = 1.0;   // margen derecho
+                                const double MARGIN_B_MM = 1.0;   // margen inferior
 
-                                // Alto ~ 1/3 del largo (≈13 mm): 13 * 8 ≈ 104 dots
-                                int barHeight = 104;
+                                // Alto visual ~ 1/3 de 30mm ≈ 10 mm
+                                int barHeightDots = DotsFromMm(10.0, 203); // si tu equipo fuese 300 dpi, cambia 203 -> 300
 
-                                // Módulo fino para estrechar ancho
-                                int moduleW = 1;     // ^BY1
-                                int quietModules = 10; // quiet zone mínima por lado (recomendado)
+                                // ^BY módulo mínimo (angosto). Si lo querés apenas más ancho: usa ^BY1,3 o ^BY2,2
+                                int moduleW = 1;     // módulo = 1 dot
+                                int ratio    = 2;
 
-                                // Ancho estimado del Code128C con 6 dígitos:
-                                // start(11) + 3 símbolos(3*11=33) + checksum(11) + stop(13) = 68 módulos + quiet(20) = 88 módulos
-                                int symbolModules = 68 + (quietModules * 2); // = 88
-                                int symbolWidthDots = symbolModules * moduleW; // con BY1 → 88 dots (~11 mm)
+                                // Estimación del ancho (Code128C, 6 dígitos):
+                                // ~68 módulos + quiet 20 = 88 módulos -> 88 * moduleW dots
+                                int estimatedModules = 88;
+                                // Convertimos ese ancho a mm para posicionar usando mm
+                                double symbolWidthMM = (estimatedModules * 25.4) / 203.0; // 203 dpi por defecto
 
-                                // Márgenes (≈1 mm)
-                                int marginRight = 8;
-                                int marginBottom = 10;
+                                // Coordenadas en mm (esquina inferior-derecha del BLOQUE1)
+                                double x_mm = LABEL_W_MM - MARGIN_R_MM - symbolWidthMM;
+                                if (x_mm < 0) x_mm = 0;
+                                double y_mm = BLOCK1_H_MM - MARGIN_B_MM - 10.0; // 10mm de alto visual
 
-                                // POSICIÓN EN ESQUINA INFERIOR DERECHA
-                                int x = PW - marginRight - symbolWidthDots;
-                                if (x < 0) x = 0;
-                                int y = LL - marginBottom - barHeight;
-                                if (y < 0) y = 0;
-
-                                // --- ZPL: solo barras, rotado 90° (BCR), sin texto humano ---
-                                sb.Append("^XA")
-                                .Append("^PW").Append(PW)
-                                .Append("^LL").Append(LL)
+                                // --- ZPL ---
+                                zpl.Append("^XA")
+                                .Append("^MUM")                         // usar milímetros
+                                .Append("^PW").Append(LABEL_W_MM)       // ancho en mm
+                                .Append("^LL").Append(LABEL_H_MM)       // largo total 70 mm
                                 .Append("^LH0,0")
-                                .Append("^BY").Append(moduleW).Append(",2,").Append(barHeight)
-                                .Append("^FO").Append(x).Append(",").Append(y)
-                                .Append("^BCR,").Append(barHeight).Append(",N,N,N")
-                                .Append("^FD").Append(code).Append("^FS")
+                                .Append("^BY").Append(moduleW).Append(",").Append(ratio).Append(",").Append(barHeightDots)
+                                .Append("^FO").Append(x_mm.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture))
+                                                .Append(",")
+                                                .Append(y_mm.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture))
+                                .Append("^BCR,").Append(barHeightDots).Append(",N,N,N") // rotado 90°, sin texto
+                                .Append("^FD").Append(code6).Append("^FS")
                                 .Append("^XZ");
 
                                 agregadas++;
@@ -244,16 +248,23 @@ namespace PrintAgent
                             if (agregadas == 0)
                             {
                                 res.StatusCode = 400;
-                                await Write(res, new { error = "Ningún item contiene 'codigo_barra' válido (últimos 6 dígitos numéricos)" });
+                                await Write(res, new { error = "Ningún item válido con 'codigo_barra' (últimos 6)" });
                                 return;
                             }
 
-                            _queue.Add(new PrintJob(JobKind.Zpl, sb.ToString()));
+                            string zplStr = zpl.ToString();
+
+                            if (dry)
+                            {
+                                // no imprimimos: devolvemos el ZPL para inspección rápida
+                                await Write(res, new { status = "dry_run", zpl = zplStr });
+                                return;
+                            }
+
+                            _queue.Add(new PrintJob(JobKind.Zpl, zplStr));
                             await Write(res, new { status = "queued", count = agregadas });
                             return;
                         }
-
-
 
                         //38x20
                         //if (!json.RootElement.TryGetProperty("valores", out var arr) ||
