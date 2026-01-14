@@ -16,8 +16,9 @@ namespace PrintAgent
             var manager = new PrinterManager(logger);
             Task.Run(() => PrintWorker(manager, logger));
 
-            var server = new HttpServer(manager, _queue, logger);
-            logger.Info("PrintAgent iniciado en http://localhost:5000");
+            var config = ServerConfig.Load(logger);
+            var server = new HttpServer(manager, _queue, logger, prefix: config.Prefix ?? "http://localhost:5000/");
+            logger.Info($"PrintAgent iniciado en {config.Prefix}");
             await server.StartAsync();
         }
 

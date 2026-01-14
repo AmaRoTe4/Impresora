@@ -3,6 +3,8 @@ using System.Collections.Concurrent;
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using System.Collections.Generic;
+using System.Linq;
 using System.Threading.Tasks;
 using System.Drawing.Printing;
 using System.Drawing;
@@ -159,9 +161,10 @@ namespace PrintAgent
 
                 bool isText = req.Url.AbsolutePath is "/print" or "/print_text";
                 bool isZpl = req.Url.AbsolutePath == "/print_zpl";
+                bool isZplRaw = req.Url.AbsolutePath == "/print_zpl_raw";
                 bool isQR = req.Url.AbsolutePath == "/print_qr";
 
-                if (req.HttpMethod == "POST" && (isText || isZpl || isQR))
+                if (req.HttpMethod == "POST" && (isText || isZpl || isZplRaw || isQR))
                 {
                     using var sr = new StreamReader(req.InputStream, req.ContentEncoding);
                     var body = await sr.ReadToEndAsync();
@@ -169,6 +172,47 @@ namespace PrintAgent
                     if (isQR)
                     {
                         await HandlePrintWithQR(body, res);
+                        return;
+                    }
+
+                                        if (isZplRaw)
+                    {
+                        // Accepts either:
+                        // - Content-Type: application/json  { "zpl": "^XA...^XZ" }
+                        // - Content-Type: text/plain       ^XA...^XZ
+                        string zplPayload = body;
+
+                        var ct = (req.ContentType ?? "").ToLowerInvariant();
+                        if (ct.Contains("application/json"))
+                        {
+                            try
+                            {
+                                var j = JsonDocument.Parse(body);
+                                if (!j.RootElement.TryGetProperty("zpl", out var zplEl))
+                                {
+                                    res.StatusCode = 400;
+                                    await Write(res, new { error = "Falta campo 'zpl'" });
+                                    return;
+                                }
+                                zplPayload = zplEl.GetString() ?? "";
+                            }
+                            catch
+                            {
+                                res.StatusCode = 400;
+                                await Write(res, new { error = "El cuerpo no es JSON válido." });
+                                return;
+                            }
+                        }
+
+                        if (string.IsNullOrWhiteSpace(zplPayload))
+                        {
+                            res.StatusCode = 400;
+                            await Write(res, new { error = "ZPL vacío" });
+                            return;
+                        }
+
+                        _queue.Add(new PrintJob(JobKind.Zpl, zplPayload));
+                        await Write(res, new { status = "queued", bytes = zplPayload.Length });
                         return;
                     }
 
