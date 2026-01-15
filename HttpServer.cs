@@ -257,13 +257,258 @@ namespace PrintAgent
             }
         }
 
+        private class TicketItem
+        {
+            public string description { get; set; } = "";
+            public int quantity { get; set; }
+            public decimal unit_price { get; set; }
+            public decimal discount_percent { get; set; } = 0;
+        }
+
+        private class TicketPayload
+        {
+            public string? logo_base64 { get; set; }          // opcional (PNG/JPG base64)
+            public string? qr_base64 { get; set; }            // opcional (PNG/JPG base64)
+            public List<string>? header_lines { get; set; }
+            public string date { get; set; } = "";
+            public string ticket_number { get; set; } = "";
+            public string client { get; set; } = "";
+            public List<TicketItem> items { get; set; } = new();
+            public decimal? discount_rate { get; set; }       // opcional
+            public List<string>? footer_lines { get; set; }
+        }
+
+        private async Task HandlePrintTicketGdi(string body, HttpListenerResponse res)
+        {
+            TicketPayload? payload;
+            try
+            {
+                payload = JsonSerializer.Deserialize<TicketPayload>(body, new JsonSerializerOptions
+                {
+                    PropertyNameCaseInsensitive = true
+                });
+            }
+            catch
+            {
+                res.StatusCode = 400;
+                await Write(res, new { error = "JSON inválido" });
+                return;
+            }
+
+            if (payload == null || payload.items == null)
+            {
+                res.StatusCode = 400;
+                await Write(res, new { error = "Payload vacío" });
+                return;
+            }
+
+            // === decode images (opcionales) ===
+            Image? logoImg = null;
+            Image? qrImg = null;
+
+            try
+            {
+                if (!string.IsNullOrWhiteSpace(payload.logo_base64))
+                {
+                    var b = Convert.FromBase64String(payload.logo_base64);
+                    logoImg = Image.FromStream(new MemoryStream(b));
+                }
+            }
+            catch { logoImg = null; }
+
+            try
+            {
+                if (!string.IsNullOrWhiteSpace(payload.qr_base64))
+                {
+                    var b = Convert.FromBase64String(payload.qr_base64);
+                    qrImg = Image.FromStream(new MemoryStream(b));
+                }
+            }
+            catch { qrImg = null; }
+
+            // === calcular totales en server (para que sea general) ===
+            decimal subtotal = 0m;
+            var computed = new List<(string desc, int qty, decimal unit, decimal disc, decimal total)>();
+
+            foreach (var it in payload.items)
+            {
+                var lineTotal = it.quantity * it.unit_price;
+                if (it.discount_percent > 0)
+                    lineTotal -= lineTotal * (it.discount_percent / 100m);
+
+                computed.Add((it.description ?? "", it.quantity, it.unit_price, it.discount_percent, lineTotal));
+                subtotal += lineTotal;
+            }
+
+            decimal discountRate = payload.discount_rate ?? 0m;
+            decimal discountAmount = discountRate > 0 ? subtotal * (discountRate / 100m) : 0m;
+            decimal totalFinal = subtotal - discountAmount;
+
+            string printer = _printerManager.GetPreferredPrinter();
+            if (string.IsNullOrWhiteSpace(printer))
+            {
+                res.StatusCode = 500;
+                await Write(res, new { error = "No hay impresora preferida configurada" });
+                return;
+            }
+
+            try
+            {
+                var doc = new PrintDocument();
+                doc.PrinterSettings.PrinterName = printer;
+
+                // Papel 80mm (aprox). Muchos drivers ignoran esto, pero ayuda.
+                // 80mm = 3.15in. Width en hundredths of an inch: 315
+                // Height dinámica (larga): 1200 = 12in aprox, el driver extiende si hace falta.
+                doc.DefaultPageSettings.PaperSize = new PaperSize("Ticket80", 315, 1200);
+                doc.DefaultPageSettings.Margins = new Margins(5, 5, 5, 5);
+
+                // Fuente mono estilo POS (si no existe, cae a la default)
+                var font = new Font("Consolas", 9f, FontStyle.Regular);
+                var fontBold = new Font("Consolas", 10f, FontStyle.Bold);
+                var fontBig = new Font("Consolas", 12f, FontStyle.Bold);
+
+                doc.PrintPage += (s, e) =>
+                {
+                    float x = e.MarginBounds.Left;
+                    float y = e.MarginBounds.Top;
+                    float w = e.MarginBounds.Width;
+
+                    // helpers
+                    float LineH(Font f) => f.GetHeight(e.Graphics) + 2;
+                    void DrawLine(string text, Font f, StringAlignment align = StringAlignment.Near)
+                    {
+                        using var sf = new StringFormat { Alignment = align };
+                        e.Graphics.DrawString(text, f, Brushes.Black, new RectangleF(x, y, w, 1000), sf);
+                        y += LineH(f);
+                    }
+                    void DrawHRule(char c)
+                    {
+                        DrawLine(new string(c, 48), font, StringAlignment.Near);
+                    }
+
+                    // LOGO (opcional)
+                    if (logoImg != null)
+                    {
+                        // Escala a ancho máximo
+                        float maxW = w;
+                        float ratio = (float)logoImg.Width / (float)logoImg.Height;
+                        float drawW = Math.Min(maxW, logoImg.Width);
+                        float drawH = drawW / ratio;
+
+                        // Centrar
+                        float lx = x + (w - drawW) / 2f;
+                        e.Graphics.DrawImage(logoImg, lx, y, drawW, drawH);
+                        y += drawH + 6;
+                    }
+
+                    // HEADER
+                    if (payload.header_lines != null)
+                    {
+                        foreach (var hl in payload.header_lines)
+                            DrawLine(hl ?? "", fontBold, StringAlignment.Center);
+
+                        DrawHRule('=');
+                    }
+
+                    // Datos
+                    DrawLine($"FECHA: {payload.date}", font);
+                    DrawLine($"TICKET NUM: {payload.ticket_number}", font);
+                    DrawLine($"CLIENTE: {payload.client}", font);
+                    DrawHRule('-');
+
+                    // Items (dos líneas por item)
+                    foreach (var it in computed)
+                    {
+                        // descripción (truncada visualmente, GDI no necesita 48 cols exactos)
+                        DrawLine(it.desc, font);
+
+                        string left = $"{it.qty}x ${it.unit:F2}";
+                        if (it.disc > 0) left += $" -{it.disc}%";
+                        string right = $"${it.total:F2}";
+
+                        // Columna derecha alineada
+                        // Dibujamos left a la izquierda y right a la derecha en la misma línea
+                        e.Graphics.DrawString(left, font, Brushes.Black, new RectangleF(x, y, w, 1000), new StringFormat { Alignment = StringAlignment.Near });
+                        e.Graphics.DrawString(right, font, Brushes.Black, new RectangleF(x, y, w, 1000), new StringFormat { Alignment = StringAlignment.Far });
+                        y += LineH(font);
+                    }
+
+                    DrawHRule('-');
+
+                    // Totales (alineados a la derecha)
+                    void DrawTotal(string label, decimal val)
+                    {
+                        e.Graphics.DrawString($"{label} ${val:F2}", font, Brushes.Black, new RectangleF(x, y, w, 1000), new StringFormat { Alignment = StringAlignment.Far });
+                        y += LineH(font);
+                    }
+
+                    DrawTotal("SUBTOTAL:", subtotal);
+
+                    if (discountRate > 0)
+                    {
+                        DrawTotal($"DESCUENTO {discountRate:F0}%:", discountAmount);
+                        DrawTotal("TOTAL C/DESCUENTO:", totalFinal);
+                    }
+
+                    // Total final grande
+                    e.Graphics.DrawString($"TOTAL FINAL: ${totalFinal:F2}", fontBig, Brushes.Black, new RectangleF(x, y, w, 1000), new StringFormat { Alignment = StringAlignment.Far });
+                    y += LineH(fontBig);
+
+                    DrawHRule('-');
+                    y += 6;
+
+                    // QR (opcional)
+                    if (qrImg != null)
+                    {
+                        float qrSize = Math.Min(w * 0.6f, 220); // tamaño razonable
+                        float qx = x + (w - qrSize) / 2f;
+                        e.Graphics.DrawImage(qrImg, qx, y, qrSize, qrSize);
+                        y += qrSize + 6;
+                    }
+
+                    // Footer (opcional)
+                    if (payload.footer_lines != null)
+                    {
+                        foreach (var fl in payload.footer_lines)
+                            DrawLine(fl ?? "", fontBold, StringAlignment.Center);
+                    }
+
+                    // Avance extra
+                    y += 20;
+
+                    // no paginación por ahora
+                    e.HasMorePages = false;
+                };
+
+                doc.EndPrint += (s, e) =>
+                {
+                    // Corte por ESC/POS al final
+                    try { SendCutCommand(); } catch { /* ignorar */ }
+                };
+
+                doc.Print();
+
+                await Write(res, new { status = "printed_gdi" });
+            }
+            catch (Exception ex)
+            {
+                res.StatusCode = 500;
+                await Write(res, new { error = ex.Message });
+            }
+            finally
+            {
+                logoImg?.Dispose();
+                qrImg?.Dispose();
+            }
+        }
+
         private void SendRawText(string text)
         {
             var printer = new PrintDocument().PrinterSettings.PrinterName;
             var bytes = Encoding.GetEncoding("UTF-8").GetBytes(text);
             RawPrinterHelper.SendBytesToPrinter(printer, bytes);
         }
-
 
         private async Task Handle(HttpListenerContext ctx)
         {
@@ -310,11 +555,18 @@ namespace PrintAgent
                 bool isZplRaw = req.Url.AbsolutePath == "/print_zpl_raw";
                 bool isQR = req.Url.AbsolutePath == "/print_qr";
                 bool isTicket = req.Url.AbsolutePath == "/print/ticket";
+                bool isTicketGdi = req.Url.AbsolutePath == "/print_ticket_gdi";
 
                 if (req.HttpMethod == "POST" && (isText || isZpl || isZplRaw || isQR || isTicket))
                 {
                     using var sr = new StreamReader(req.InputStream, req.ContentEncoding);
                     var body = await sr.ReadToEndAsync();
+
+                    if (isTicketGdi)
+                    {
+                        await HandlePrintTicketGdi(body, res);
+                        return;
+                    }
 
                     if (isQR)
                     {
