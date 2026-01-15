@@ -557,7 +557,7 @@ namespace PrintAgent
                 bool isTicket = req.Url.AbsolutePath == "/print/ticket";
                 bool isTicketGdi = req.Url.AbsolutePath == "/print_ticket_gdi";
 
-                if (req.HttpMethod == "POST" && (isText || isZpl || isZplRaw || isQR || isTicket))
+                if (req.HttpMethod == "POST" && (isText || isZpl || isZplRaw || isQR || isTicket || isTicketGdi))
                 {
                     using var sr = new StreamReader(req.InputStream, req.ContentEncoding);
                     var body = await sr.ReadToEndAsync();
