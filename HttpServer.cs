@@ -110,6 +110,152 @@ namespace PrintAgent
             }
         }
 
+        private async Task HandlePrintTicket(string body, HttpListenerResponse res)
+        {
+            JsonDocument json;
+            try { json = JsonDocument.Parse(body); }
+            catch
+            {
+                res.StatusCode = 400;
+                await Write(res, new { error = "JSON inválido" });
+                return;
+            }
+
+            const int COLS = 48;
+            string Line(char c = '-') => new string(c, COLS);
+
+            string Center(string text)
+            {
+                if (text.Length >= COLS) return text[..COLS];
+                int pad = (COLS - text.Length) / 2;
+                return new string(' ', pad) + text;
+            }
+
+            string Right(string label, string value)
+            {
+                var txt = $"{label} {value}";
+                return txt.Length >= COLS
+                    ? txt[..COLS]
+                    : new string(' ', COLS - txt.Length) + txt;
+            }
+
+            var bytes = new List<byte>();
+
+            // ===== LOGO (opcional) =====
+            if (json.RootElement.TryGetProperty("logo_base64", out var logoEl))
+            {
+                try
+                {
+                    var logoBytes = Convert.FromBase64String(logoEl.GetString() ?? "");
+                    using var ms = new MemoryStream(logoBytes);
+                    using var img = Image.FromStream(ms);
+                    using var bmp = new MemoryStream();
+                    img.Save(bmp, System.Drawing.Imaging.ImageFormat.Bmp);
+                    bytes.AddRange(RawPrinterHelper.GetImageCommandFromBitmap(bmp.ToArray()));
+                    bytes.AddRange(Encoding.UTF8.GetBytes("\n"));
+                }
+                catch { /* logo opcional, si falla se ignora */ }
+            }
+
+            // ===== HEADER =====
+            if (json.RootElement.TryGetProperty("header_lines", out var headers) &&
+                headers.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var h in headers.EnumerateArray())
+                    bytes.AddRange(Encoding.UTF8.GetBytes(Center(h.GetString() ?? "") + "\n"));
+
+                bytes.AddRange(Encoding.UTF8.GetBytes(Line('=') + "\n"));
+            }
+
+            // ===== DATOS GENERALES =====
+            string fecha = json.RootElement.GetProperty("date").GetString() ?? "";
+            string numero = json.RootElement.GetProperty("ticket_number").GetString() ?? "";
+            string cliente = json.RootElement.GetProperty("client").GetString() ?? "";
+
+            bytes.AddRange(Encoding.UTF8.GetBytes($"FECHA: {fecha}\n"));
+            bytes.AddRange(Encoding.UTF8.GetBytes($"TICKET NUM: {numero}\n"));
+            bytes.AddRange(Encoding.UTF8.GetBytes($"CLIENTE: {cliente}\n"));
+            bytes.AddRange(Encoding.UTF8.GetBytes(Line() + "\n"));
+
+            // ===== ITEMS =====
+            foreach (var it in json.RootElement.GetProperty("items").EnumerateArray())
+            {
+                string desc = it.GetProperty("description").GetString() ?? "";
+                int qty = it.GetProperty("quantity").GetInt32();
+                decimal unit = it.GetProperty("unit_price").GetDecimal();
+                decimal total = it.GetProperty("total").GetDecimal();
+                decimal disc = it.TryGetProperty("discount_percent", out var d) ? d.GetDecimal() : 0;
+
+                if (desc.Length > COLS)
+                    desc = desc[..(COLS - 3)] + "...";
+
+                bytes.AddRange(Encoding.UTF8.GetBytes(desc + "\n"));
+
+                string left = $"{qty}x ${unit:F2}";
+                if (disc > 0) left += $" -{disc}%";
+                string right = $"${total:F2}";
+                bytes.AddRange(Encoding.UTF8.GetBytes(left.PadRight(COLS - right.Length) + right + "\n"));
+            }
+
+            bytes.AddRange(Encoding.UTF8.GetBytes(Line() + "\n"));
+
+            // ===== TOTALES =====
+            if (json.RootElement.TryGetProperty("subtotal", out var sub))
+                bytes.AddRange(Encoding.UTF8.GetBytes(Right("SUBTOTAL:", $"${sub.GetDecimal():F2}") + "\n"));
+
+            if (json.RootElement.TryGetProperty("discount_rate", out var dr) &&
+                json.RootElement.TryGetProperty("discount_amount", out var da))
+                bytes.AddRange(Encoding.UTF8.GetBytes(
+                    Right($"DESCUENTO {dr.GetDecimal()}%:", $"${da.GetDecimal():F2}") + "\n"));
+
+            if (json.RootElement.TryGetProperty("total_with_discount", out var td))
+                bytes.AddRange(Encoding.UTF8.GetBytes(
+                    Right("TOTAL C/DESCUENTO:", $"${td.GetDecimal():F2}") + "\n"));
+
+            bytes.AddRange(Encoding.UTF8.GetBytes(
+                Right("TOTAL FINAL:", $"${json.RootElement.GetProperty("total_final").GetDecimal():F2}") + "\n"));
+
+            bytes.AddRange(Encoding.UTF8.GetBytes(Line() + "\n\n"));
+
+            // ===== QR =====
+            if (json.RootElement.TryGetProperty("qr_base64", out var qrEl))
+            {
+                try
+                {
+                    var qrBytes = Convert.FromBase64String(qrEl.GetString() ?? "");
+                    using var ms = new MemoryStream(qrBytes);
+                    using var img = Image.FromStream(ms);
+                    using var bmp = new MemoryStream();
+                    img.Save(bmp, System.Drawing.Imaging.ImageFormat.Bmp);
+                    bytes.AddRange(RawPrinterHelper.GetImageCommandFromBitmap(bmp.ToArray()));
+                    bytes.AddRange(Encoding.UTF8.GetBytes("\n\n"));
+                }
+                catch { }
+            }
+
+            // ===== FOOTER =====
+            if (json.RootElement.TryGetProperty("footer_lines", out var foot) &&
+                foot.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var f in foot.EnumerateArray())
+                    bytes.AddRange(Encoding.UTF8.GetBytes(Center(f.GetString() ?? "") + "\n"));
+            }
+
+            // ===== CORTE =====
+            bytes.AddRange(new byte[] { 0x1D, 0x56, 0x41, 0x00 });
+
+            try
+            {
+                var printer = _printerManager.GetPreferredPrinter();
+                RawPrinterHelper.SendBytesToPrinter(printer, bytes.ToArray());
+                await Write(res, new { status = "printed" });
+            }
+            catch (Exception ex)
+            {
+                res.StatusCode = 500;
+                await Write(res, new { error = ex.Message });
+            }
+        }
 
         private void SendRawText(string text)
         {
@@ -163,8 +309,9 @@ namespace PrintAgent
                 bool isZpl = req.Url.AbsolutePath == "/print_zpl";
                 bool isZplRaw = req.Url.AbsolutePath == "/print_zpl_raw";
                 bool isQR = req.Url.AbsolutePath == "/print_qr";
+                bool isTicket = req.Url.AbsolutePath == "/print/ticket";
 
-                if (req.HttpMethod == "POST" && (isText || isZpl || isZplRaw || isQR))
+                if (req.HttpMethod == "POST" && (isText || isZpl || isZplRaw || isQR || isTicket))
                 {
                     using var sr = new StreamReader(req.InputStream, req.ContentEncoding);
                     var body = await sr.ReadToEndAsync();
@@ -175,7 +322,14 @@ namespace PrintAgent
                         return;
                     }
 
-                                        if (isZplRaw)
+                    if (isTicket)
+                    {
+                        await HandlePrintTicket(body, res);
+                        return;
+                    }
+
+
+                    if (isZplRaw)
                     {
                         // Accepts either:
                         // - Content-Type: application/json  { "zpl": "^XA...^XZ" }
