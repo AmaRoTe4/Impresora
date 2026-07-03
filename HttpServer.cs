@@ -23,6 +23,7 @@ namespace PrintAgent
         private int _activeRequests;
 
         public string Prefix => _prefix;
+        public bool IsRunning => _listener?.IsListening ?? false;
 
         public HttpServer(PrinterManager manager, BlockingCollection<PrintJob> queue, Logger logger, string prefix = "http://localhost:5000/")
         {

@@ -20,8 +20,25 @@ namespace PrintAgent
             _backupPath = Path.Combine(dir, "agent.log.bak");
         }
 
+        public string LogPath => _logPath;
+
         public void Info(string msg) => Write("INFO", msg);
         public void Error(string msg) => Write("ERROR", msg);
+
+        public void OpenLogFile()
+        {
+            try
+            {
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("notepad.exe", $"\"{_logPath}\"")
+                {
+                    UseShellExecute = true
+                });
+            }
+            catch (Exception ex)
+            {
+                Error("No se pudo abrir el log: " + ex.Message);
+            }
+        }
 
         private void Write(string level, string msg)
         {

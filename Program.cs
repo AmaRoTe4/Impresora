@@ -1,6 +1,7 @@
 
 using System;
 using System.Collections.Concurrent;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 
@@ -13,9 +14,22 @@ namespace PrintAgent
         [STAThread]
         static void Main(string[] args)
         {
+            using var singleInstanceMutex = new Mutex(initiallyOwnedByMe: true, "Global\\PrintAgent_SingleInstance", out bool isNew);
+            if (!isNew)
+            {
+                MessageBox.Show("PrintAgent ya está en ejecución (ver bandeja del sistema).", "PrintAgent",
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
             ApplicationConfiguration.Initialize();
 
-            var logger  = new Logger();
+            var logger = new Logger();
+
+            Application.ThreadException += (s, e) => logger.Error("Excepción de UI no manejada: " + e.Exception);
+            AppDomain.CurrentDomain.UnhandledException += (s, e) => logger.Error("Excepción fatal no manejada: " + e.ExceptionObject);
+            Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
+
             var manager = new PrinterManager(logger);
             Task.Run(() => PrintWorker(manager, logger));
 

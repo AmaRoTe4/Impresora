@@ -10,10 +10,10 @@ namespace PrintAgent
 {
     /// <summary>
     /// Ventana de configuracion abierta desde el tray icon. Permite elegir
-    /// host (localhost / IP de LAN detectada / IP personalizada), puerto,
-    /// impresora preferida y si arranca con Windows. Al guardar reescribe
-    /// printagent.env (ServerConfig.Save) y reinicia el HttpListener en caliente
-    /// (HttpServer.RestartAsync), sin reiniciar el proceso.
+    /// host (localhost / IP de LAN detectada / IP personalizada) o escuchar
+    /// en toda la LAN, puerto, impresora preferida y si arranca con Windows.
+    /// Al guardar reescribe printagent.env (ServerConfig.Save) y reinicia el
+    /// HttpListener en caliente (HttpServer.RestartAsync), sin reiniciar el proceso.
     /// </summary>
     internal sealed class SettingsForm : Form
     {
@@ -23,6 +23,8 @@ namespace PrintAgent
         private readonly PrinterManager _manager;
         private readonly Logger _logger;
 
+        private readonly Label _liveStatusLabel = new() { AutoSize = true, ForeColor = System.Drawing.Color.Black };
+        private readonly CheckBox _listenAllCheck = new() { Text = "Escuchar en toda la red (LAN)" };
         private readonly ComboBox _hostCombo = new() { DropDownStyle = ComboBoxStyle.DropDownList };
         private readonly TextBox _customHostBox = new();
         private readonly NumericUpDown _portInput = new() { Minimum = 1, Maximum = 65535, Width = 100 };
@@ -37,8 +39,8 @@ namespace PrintAgent
             _logger = logger;
 
             Text = "PrintAgent - Configuración";
-            Width = 420;
-            Height = 320;
+            Width = 440;
+            Height = 400;
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox = false;
             MinimizeBox = false;
@@ -53,6 +55,11 @@ namespace PrintAgent
                     e.Cancel = true;
                     Hide();
                 }
+            };
+
+            VisibleChanged += (s, e) =>
+            {
+                if (Visible) RefreshLiveStatus();
             };
 
             BuildLayout();
@@ -71,37 +78,67 @@ namespace PrintAgent
             layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 35));
             layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 65));
 
-            layout.Controls.Add(new Label { Text = "Host:", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 0);
-            layout.Controls.Add(_hostCombo, 1, 0);
+            layout.Controls.Add(new Label(), 0, 0);
+            layout.Controls.Add(_liveStatusLabel, 1, 0);
 
-            layout.Controls.Add(new Label { Text = "IP personalizada:", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 1);
-            layout.Controls.Add(_customHostBox, 1, 1);
+            layout.Controls.Add(new Label(), 0, 1);
+            layout.Controls.Add(_listenAllCheck, 1, 1);
 
-            layout.Controls.Add(new Label { Text = "Puerto:", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 2);
-            layout.Controls.Add(_portInput, 1, 2);
+            layout.Controls.Add(new Label { Text = "Host:", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 2);
+            layout.Controls.Add(_hostCombo, 1, 2);
 
-            layout.Controls.Add(new Label { Text = "Impresora preferida:", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 3);
-            layout.Controls.Add(_printerCombo, 1, 3);
+            layout.Controls.Add(new Label { Text = "IP personalizada:", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 3);
+            layout.Controls.Add(_customHostBox, 1, 3);
 
-            layout.Controls.Add(new Label(), 0, 4);
-            layout.Controls.Add(_startWithWindowsCheck, 1, 4);
+            layout.Controls.Add(new Label { Text = "Puerto:", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 4);
+            layout.Controls.Add(_portInput, 1, 4);
 
-            var saveButton = new Button { Text = "Guardar", Width = 100 };
-            saveButton.Click += async (s, e) => await Save();
-            layout.Controls.Add(new Label(), 0, 5);
-            layout.Controls.Add(saveButton, 1, 5);
+            layout.Controls.Add(new Label { Text = "Impresora preferida:", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 5);
+            layout.Controls.Add(_printerCombo, 1, 5);
 
             layout.Controls.Add(new Label(), 0, 6);
-            layout.Controls.Add(_statusLabel, 1, 6);
+            layout.Controls.Add(_startWithWindowsCheck, 1, 6);
+
+            var buttonsPanel = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight };
+            var saveButton = new Button { Text = "Guardar", Width = 100 };
+            saveButton.Click += async (s, e) => await Save();
+            var logsButton = new Button { Text = "Ver logs", Width = 100 };
+            logsButton.Click += (s, e) => _logger.OpenLogFile();
+            buttonsPanel.Controls.Add(saveButton);
+            buttonsPanel.Controls.Add(logsButton);
+
+            layout.Controls.Add(new Label(), 0, 7);
+            layout.Controls.Add(buttonsPanel, 1, 7);
+
+            layout.Controls.Add(new Label(), 0, 8);
+            layout.Controls.Add(_statusLabel, 1, 8);
 
             Controls.Add(layout);
 
             _hostCombo.SelectedIndexChanged += (s, e) =>
-                _customHostBox.Enabled = (string)_hostCombo.SelectedItem! == CustomOption;
+                _customHostBox.Enabled = !_listenAllCheck.Checked && (string)_hostCombo.SelectedItem! == CustomOption;
+
+            _listenAllCheck.CheckedChanged += (s, e) =>
+            {
+                bool listenAll = _listenAllCheck.Checked;
+                _hostCombo.Enabled = !listenAll;
+                _customHostBox.Enabled = !listenAll && (string)(_hostCombo.SelectedItem ?? "") == CustomOption;
+            };
+        }
+
+        private void RefreshLiveStatus()
+        {
+            bool running = _server.IsRunning;
+            _liveStatusLabel.ForeColor = running ? System.Drawing.Color.DarkGreen : System.Drawing.Color.DarkRed;
+            _liveStatusLabel.Text = running
+                ? $"Estado: Activo — {_server.Prefix}"
+                : "Estado: Detenido";
         }
 
         private void LoadCurrentValues()
         {
+            RefreshLiveStatus();
+
             var lanIps = GetLanIps().ToList();
 
             _hostCombo.Items.Clear();
@@ -114,7 +151,10 @@ namespace PrintAgent
                 .Replace("http://", "").Replace("https://", "")
                 .Split(':')[0];
 
-            if (currentHost == "+" ) currentHost = lanIps.FirstOrDefault() ?? "localhost";
+            bool currentlyListensAll = currentHost == "+";
+            _listenAllCheck.Checked = currentlyListensAll;
+
+            if (currentlyListensAll) currentHost = lanIps.FirstOrDefault() ?? "localhost";
 
             if (_hostCombo.Items.Contains(currentHost))
             {
@@ -125,8 +165,10 @@ namespace PrintAgent
             {
                 _hostCombo.SelectedItem = CustomOption;
                 _customHostBox.Text = currentHost;
-                _customHostBox.Enabled = true;
+                _customHostBox.Enabled = !currentlyListensAll;
             }
+
+            _hostCombo.Enabled = !currentlyListensAll;
 
             var portPart = _server.Prefix.TrimEnd('/').Split(':').LastOrDefault();
             _portInput.Value = int.TryParse(portPart, out var p) && p > 0 && p < 65536 ? p : 5000;
@@ -162,11 +204,13 @@ namespace PrintAgent
 
         private async Task Save()
         {
-            string host = (string)_hostCombo.SelectedItem! == CustomOption
-                ? _customHostBox.Text.Trim()
-                : (string)_hostCombo.SelectedItem!;
+            bool listenAll = _listenAllCheck.Checked;
 
-            if (string.IsNullOrWhiteSpace(host))
+            string host = (string)(_hostCombo.SelectedItem ?? "") == CustomOption
+                ? _customHostBox.Text.Trim()
+                : (string)(_hostCombo.SelectedItem ?? "");
+
+            if (!listenAll && string.IsNullOrWhiteSpace(host))
             {
                 _statusLabel.ForeColor = System.Drawing.Color.DarkRed;
                 _statusLabel.Text = "Ingresá una IP válida.";
@@ -180,7 +224,7 @@ namespace PrintAgent
                 if (_printerCombo.SelectedItem is string printerName)
                     _manager.SetPreferredPrinter(printerName);
 
-                var newConfig = ServerConfig.Save(host, port, listenAll: false, _logger);
+                var newConfig = ServerConfig.Save(host, port, listenAll, _logger);
                 await _server.RestartAsync(newConfig.Prefix!);
 
                 if (_startWithWindowsCheck.Checked)
@@ -190,12 +234,14 @@ namespace PrintAgent
 
                 _statusLabel.ForeColor = System.Drawing.Color.DarkGreen;
                 _statusLabel.Text = $"Guardado. Escuchando en {newConfig.Prefix}";
+                RefreshLiveStatus();
             }
             catch (Exception ex)
             {
                 _logger.Error("Error guardando config desde GUI: " + ex.Message);
                 _statusLabel.ForeColor = System.Drawing.Color.DarkRed;
                 _statusLabel.Text = "Error: " + ex.Message;
+                RefreshLiveStatus();
             }
         }
     }
