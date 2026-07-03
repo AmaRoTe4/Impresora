@@ -14,7 +14,7 @@ namespace PrintAgent
         [STAThread]
         static void Main(string[] args)
         {
-            using var singleInstanceMutex = new Mutex(initiallyOwnedByMe: true, "Global\\PrintAgent_SingleInstance", out bool isNew);
+            using var singleInstanceMutex = new Mutex(initiallyOwned: true, "Global\\PrintAgent_SingleInstance", out bool isNew);
             if (!isNew)
             {
                 MessageBox.Show("PrintAgent ya está en ejecución (ver bandeja del sistema).", "PrintAgent",
