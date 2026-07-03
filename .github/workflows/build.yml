@@ -1,0 +1,42 @@
+name: Build-PrintAgent
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:       # permite lanzar manualmente
+
+jobs:
+  build:
+    runs-on: windows-latest       # runner Windows para imprimir y compilar
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Restore & Publish single-file
+        run: |
+          dotnet publish PrintAgent.csproj `
+            -c Release `
+            -r win-x64 `
+            --self-contained `
+            -p:PublishSingleFile=true `
+            -o out
+
+      # (Opcional) compilar instalador Inno Setup
+      - name: Build Inno Setup
+        run: |
+          choco install innosetup -y          # instala Inno Setup CLI
+          "& 'C:\Program Files (x86)\Inno Setup 6\iscc.exe' setup.iss /DOutputDir=out"
+        continue-on-error: true               # si no querés setup.iss, omite este bloque
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PrintAgent-win-x64
+          path: out/*
