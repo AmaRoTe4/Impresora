@@ -647,7 +647,8 @@ namespace PrintAgent
                     {
                         defaultPrinter = _printerManager.GetDefaultPrinter(),
                         preferredPrinter = _printerManager.GetPreferredPrinter(),
-                        printers = _printerManager.GetInstalledPrinters()
+                        printers = _printerManager.GetInstalledPrinters(),
+                        installed = _printerManager.GetInstalledPrinters()
                     });
                     return;
                 }
@@ -798,6 +799,18 @@ namespace PrintAgent
 
                 }
 
+                if (req.Url.AbsolutePath == "/admin")
+                {
+                    await HandleAdmin(req, res);
+                    return;
+                }
+
+                if (req.Url.AbsolutePath == "/")
+                {
+                    await Write(res, new { status = "ok" });
+                    return;
+                }
+
                 res.StatusCode = 404;
                 await Write(res, new { error = "not-found" });
             }
@@ -808,6 +821,160 @@ namespace PrintAgent
                 _logger.Error("Excepción: " + ex);
             }
             finally { res.Close(); }
+        }
+
+        private async Task HandleAdmin(HttpListenerRequest req, HttpListenerResponse res)
+        {
+            if (req.HttpMethod == "GET")
+            {
+                bool wantsJson = req.AcceptTypes?.Contains("application/json") == true
+                    || (req.QueryString["format"]?.ToLowerInvariant() == "json");
+
+                string rawHost = _prefix.Replace("http://", "").Replace("https://", "").Split(':')[0];
+                string portStr = _prefix.TrimEnd('/').Split(':').LastOrDefault() ?? "5000";
+                string displayHost = rawHost == "+" ? "0.0.0.0" : rawHost;
+
+                if (wantsJson)
+                {
+                    await Write(res, new
+                    {
+                        host = displayHost,
+                        port = int.TryParse(portStr, out var p) ? p : 5000,
+                        prefix = _prefix
+                    });
+                    return;
+                }
+
+                var msg = req.QueryString["saved"] == "1" ? "<div class=\"msg ok\">✔ Config saved. Server restarted.</div>" : "";
+
+                var html = $@"<!DOCTYPE html>
+<html lang=""es"">
+<head>
+  <meta charset=""UTF-8"">
+  <title>PrintAgent Admin</title>
+  <style>
+    *{{box-sizing:border-box}}
+    body{{font-family:-apple-system,sans-serif;margin:2em;background:#f5f5f5}}
+    .card{{background:#fff;max-width:420px;margin:0 auto;padding:24px;border-radius:8px;box-shadow:0 1px 4px rgba(0,0,0,.1)}}
+    h2{{margin:0 0 8px}}
+    .current{{font-size:.85em;color:#555;margin-bottom:20px}}
+    label{{display:block;margin:12px 0 4px;font-weight:600;font-size:.9em}}
+    input{{width:100%;padding:8px;border:1px solid #ccc;border-radius:4px;font-size:1em}}
+    input:focus{{border-color:#06c;outline:none}}
+    button{{width:100%;padding:10px;background:#06c;color:#fff;border:none;border-radius:4px;font-size:1em;cursor:pointer;margin-top:16px}}
+    button:hover{{background:#0052a3}}
+    .msg{{padding:10px;border-radius:4px;margin-bottom:16px}}
+    .msg.ok{{background:#d4edda;color:#155724}}
+    .msg.err{{background:#f8d7da;color:#721c24}}
+  </style>
+</head>
+<body>
+<div class=""card"">
+  <h2>PrintAgent</h2>
+  <div class=""current""><strong>{_prefix}</strong></div>
+  {msg}
+  <form method=""POST"">
+    <label>Host</label>
+    <input name=""host"" value=""{displayHost}"" placeholder=""0.0.0.0"">
+    <label>Port</label>
+    <input type=""number"" name=""port"" value=""{portStr}"" min=""1"" max=""65535"">
+    <button>Save &amp; Restart</button>
+  </form>
+</div>
+</body>
+</html>";
+                await WriteHtml(res, html);
+                return;
+            }
+
+            if (req.HttpMethod == "POST")
+            {
+                using var sr = new StreamReader(req.InputStream, req.ContentEncoding);
+                var body = await sr.ReadToEndAsync();
+
+                string host;
+                int port;
+
+                if (req.ContentType?.StartsWith("application/json") == true)
+                {
+                    var json = JsonDocument.Parse(body);
+                    host = json.RootElement.GetProperty("host").GetString() ?? "localhost";
+                    port = json.RootElement.GetProperty("port").GetInt32();
+                }
+                else
+                {
+                    var form = ParseFormData(body);
+                    host = form.GetValueOrDefault("host", "localhost");
+                    int.TryParse(form.GetValueOrDefault("port"), out port);
+                    if (port <= 0 || port > 65535) port = 5000;
+                }
+
+                bool wantsJson = req.AcceptTypes?.Contains("application/json") == true
+                    || (req.QueryString["format"]?.ToLowerInvariant() == "json");
+
+                try
+                {
+                    var newConfig = ServerConfig.Save(host, port, false, _logger);
+
+                    if (wantsJson)
+                    {
+                        await Write(res, new { status = "ok", message = "Config saved. Restarting...", prefix = newConfig.Prefix });
+                    }
+                    else
+                    {
+                        res.StatusCode = 302;
+                        res.Headers.Add("Location", "/admin?saved=1");
+                    }
+
+                    _ = Task.Run(async () =>
+                    {
+                        await Task.Delay(200);
+                        try { await RestartAsync(newConfig.Prefix!); }
+                        catch (Exception ex) { _logger.Error("Admin restart failed: " + ex.Message); }
+                    });
+                }
+                catch (Exception ex)
+                {
+                    if (wantsJson)
+                    {
+                        res.StatusCode = 500;
+                        await Write(res, new { error = ex.Message });
+                    }
+                    else
+                    {
+                        var errHtml = $"<!DOCTYPE html><html lang=\"es\"><head><meta charset=\"UTF-8\"><title>PrintAgent</title></head><body style=\"font-family:sans-serif;margin:2em\"><div class=\"msg err\" style=\"background:#f8d7da;color:#721c24;padding:12px;border-radius:4px\"><strong>Error:</strong> {ex.Message}</div><a href=\"/admin\">← Back</a></body></html>";
+                        await WriteHtml(res, errHtml);
+                    }
+                }
+                return;
+            }
+
+            res.StatusCode = 405;
+            await Write(res, new { error = "method-not-allowed" });
+        }
+
+        private static Dictionary<string, string> ParseFormData(string body)
+        {
+            var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            if (string.IsNullOrWhiteSpace(body)) return result;
+            foreach (var part in body.Split('&'))
+            {
+                var idx = part.IndexOf('=');
+                if (idx <= 0) continue;
+                var k = Uri.UnescapeDataString(part[..idx]);
+                var v = idx < part.Length - 1 ? Uri.UnescapeDataString(part[(idx + 1)..]) : "";
+                result[k] = v;
+            }
+            return result;
+        }
+
+        private static async Task WriteHtml(HttpListenerResponse res, string html)
+        {
+            var buf = Encoding.UTF8.GetBytes(html);
+            res.ContentType = "text/html; charset=utf-8";
+            res.ContentEncoding = Encoding.UTF8;
+            res.ContentLength64 = buf.Length;
+            await res.OutputStream.WriteAsync(buf);
         }
 
         private static async Task Write(HttpListenerResponse res, object obj)
