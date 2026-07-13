@@ -28,15 +28,19 @@ jobs:
             -p:PublishSingleFile=true `
             -o out
 
-      # (Opcional) compilar instalador Inno Setup
-      - name: Build Inno Setup
+      - name: Build Inno Setup installer
         run: |
           choco install innosetup -y          # instala Inno Setup CLI
-          "& 'C:\Program Files (x86)\Inno Setup 6\iscc.exe' setup.iss /DOutputDir=out"
-        continue-on-error: true               # si no querés setup.iss, omite este bloque
+          & 'C:\Program Files (x86)\Inno Setup 6\iscc.exe' index.iss
 
-      - name: Upload artifact
+      - name: Upload published binaries
         uses: actions/upload-artifact@v4
         with:
           name: PrintAgent-win-x64
           path: out/*
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: PrintAgent-installer
+          path: dist/*

@@ -1,6 +1,6 @@
+
 using System;
 using System.Collections.Concurrent;
-using System.Net;
 using System.Text;
 using System.Text.Json;
 using System.Collections.Generic;
@@ -10,20 +10,24 @@ using System.Drawing.Printing;
 using System.Drawing;
 using System.IO;
 using System.Threading;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Logging;
 
 namespace PrintAgent
 {
     public class HttpServer
     {
-        private HttpListener _listener;
         private readonly PrinterManager _printerManager;
         private readonly BlockingCollection<PrintJob> _queue;
         private readonly Logger _logger;
+        private WebApplication? _app;
         private string _prefix;
-        private int _activeRequests;
+        private bool _isRunning;
 
         public string Prefix => _prefix;
-        public bool IsRunning => _listener?.IsListening ?? false;
+        public bool IsRunning => _isRunning;
 
         public HttpServer(PrinterManager manager, BlockingCollection<PrintJob> queue, Logger logger, string prefix = "http://localhost:5000/")
         {
@@ -31,45 +35,26 @@ namespace PrintAgent
             _queue = queue;
             _logger = logger;
             _prefix = prefix;
-            _listener = new HttpListener();
-            _listener.Prefixes.Add(prefix);
         }
 
         public async Task StartAsync()
         {
-            _listener.Start();
+            _app = BuildApp(_prefix);
+            await _app.StartAsync();
+            _isRunning = true;
             _logger.Info($"HTTP server iniciado en {_prefix}");
-            await ListenLoop();
-        }
-
-        private async Task ListenLoop()
-        {
-            while (_listener.IsListening)
-            {
-                HttpListenerContext ctx;
-                try
-                {
-                    ctx = await _listener.GetContextAsync();
-                }
-                catch (HttpListenerException)
-                {
-                    break; // listener fue detenido (Stop/RestartAsync)
-                }
-                catch (ObjectDisposedException)
-                {
-                    break;
-                }
-                _ = Task.Run(() => Handle(ctx));
-            }
         }
 
         public void Stop()
         {
             try
             {
-                _listener.Stop(); // deja de aceptar conexiones nuevas
-                WaitForDrain();
-                _listener.Close();
+                if (_app != null)
+                {
+                    using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+                    _app.StopAsync(cts.Token).GetAwaiter().GetResult();
+                }
+                _isRunning = false;
                 _logger.Info("HTTP server detenido");
             }
             catch (Exception ex)
@@ -78,65 +63,96 @@ namespace PrintAgent
             }
         }
 
-        private void WaitForDrain()
-        {
-            const int maxWaitMs = 2000;
-            const int pollMs = 50;
-            int waited = 0;
-            while (Volatile.Read(ref _activeRequests) > 0 && waited < maxWaitMs)
-            {
-                Thread.Sleep(pollMs);
-                waited += pollMs;
-            }
-        }
-
         /// <summary>
         /// Detiene el listener actual y arranca uno nuevo con otro prefix (host/puerto),
         /// sin reiniciar el proceso. Bindea de forma sincrónica para poder propagar
-        /// al llamador un error real (puerto ocupado, IP inválida, falta urlacl, etc.)
-        /// en vez de tragarlo en background. Si falla, intenta volver al prefix anterior.
+        /// al llamador un error real (puerto ocupado, IP inválida, etc.) en vez de
+        /// tragarlo en background. Si falla, intenta volver al prefix anterior.
         /// </summary>
-        public Task RestartAsync(string newPrefix)
+        public async Task RestartAsync(string newPrefix)
         {
             var previousPrefix = _prefix;
-            Stop();
+            var previousApp = _app;
 
-            var newListener = new HttpListener();
-            newListener.Prefixes.Add(newPrefix);
+            if (previousApp != null)
+            {
+                try
+                {
+                    using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+                    await previousApp.StopAsync(cts.Token);
+                }
+                catch { /* seguimos igual, se va a reemplazar */ }
+            }
+            _isRunning = false;
+
+            var newApp = BuildApp(newPrefix);
             try
             {
-                newListener.Start();
+                await newApp.StartAsync();
             }
             catch (Exception ex)
             {
                 _logger.Error($"No se pudo escuchar en {newPrefix}: {ex.Message}");
-                RollbackTo(previousPrefix);
+                await RollbackTo(previousPrefix);
                 throw new InvalidOperationException($"No se pudo escuchar en {newPrefix}: {ex.Message}", ex);
             }
 
-            _listener = newListener;
+            _app = newApp;
             _prefix = newPrefix;
+            _isRunning = true;
             _logger.Info($"HTTP server reiniciado en {_prefix}");
-            _ = Task.Run(ListenLoop);
-            return Task.CompletedTask;
         }
 
-        private void RollbackTo(string previousPrefix)
+        private async Task RollbackTo(string previousPrefix)
         {
             try
             {
-                var rollbackListener = new HttpListener();
-                rollbackListener.Prefixes.Add(previousPrefix);
-                rollbackListener.Start();
-                _listener = rollbackListener;
+                var rollbackApp = BuildApp(previousPrefix);
+                await rollbackApp.StartAsync();
+                _app = rollbackApp;
                 _prefix = previousPrefix;
-                _ = Task.Run(ListenLoop);
+                _isRunning = true;
                 _logger.Info($"Rollback: volvió a escuchar en {previousPrefix}");
             }
             catch (Exception rollbackEx)
             {
+                _isRunning = false;
                 _logger.Error("Rollback también falló, server queda detenido: " + rollbackEx.Message);
             }
+        }
+
+        /// <summary>
+        /// Kestrel entiende el mismo formato de prefix que usaba HttpListener
+        /// (http://host:port/, http://+:port/ para todas las interfaces) via UseUrls,
+        /// pero bindea por socket en vez de http.sys, así que no requiere reserva de
+        /// URL (netsh http add urlacl) ni proceso elevado para escuchar en una IP de LAN.
+        /// </summary>
+        private WebApplication BuildApp(string prefix)
+        {
+            var builder = WebApplication.CreateBuilder();
+            builder.Logging.ClearProviders();
+            builder.WebHost.UseUrls(prefix);
+
+            var app = builder.Build();
+
+            app.Use(async (ctx, next) =>
+            {
+                ctx.Response.Headers.Append("Access-Control-Allow-Origin", "*");
+                ctx.Response.Headers.Append("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+                ctx.Response.Headers.Append("Access-Control-Allow-Headers", "Content-Type");
+
+                if (ctx.Request.Method == "OPTIONS")
+                {
+                    ctx.Response.StatusCode = 204;
+                    return;
+                }
+
+                await next();
+            });
+
+            app.Run(HandleCore);
+
+            return app;
         }
 
         private void SendCutCommand()
@@ -146,14 +162,14 @@ namespace PrintAgent
             RawPrinterHelper.SendBytesToPrinter(printer, cut);
         }
 
-        private async Task HandlePrintWithQR(string body, HttpListenerResponse res)
+        private async Task HandlePrintWithQR(string body, HttpContext ctx)
         {
             JsonDocument json;
             try { json = JsonDocument.Parse(body); }
             catch
             {
-                res.StatusCode = 400;
-                await Write(res, new { error = "El cuerpo no es JSON válido." });
+                ctx.Response.StatusCode = 400;
+                await Write(ctx, new { error = "El cuerpo no es JSON válido." });
                 return;
             }
 
@@ -161,8 +177,8 @@ namespace PrintAgent
                 !json.RootElement.TryGetProperty("text_2", out var text2El) ||
                 !json.RootElement.TryGetProperty("qr_base64", out var qrEl))
             {
-                res.StatusCode = 400;
-                await Write(res, new { error = "Faltan campos: text_1, text_2 o qr_base64" });
+                ctx.Response.StatusCode = 400;
+                await Write(ctx, new { error = "Faltan campos: text_1, text_2 o qr_base64" });
                 return;
             }
 
@@ -174,8 +190,8 @@ namespace PrintAgent
             try { qrBytes = Convert.FromBase64String(qrBase64); }
             catch
             {
-                res.StatusCode = 400;
-                await Write(res, new { error = "QR inválido: base64 no válido" });
+                ctx.Response.StatusCode = 400;
+                await Write(ctx, new { error = "QR inválido: base64 no válido" });
                 return;
             }
 
@@ -201,23 +217,23 @@ namespace PrintAgent
                 var printer = new PrintDocument().PrinterSettings.PrinterName;
                 RawPrinterHelper.SendBytesToPrinter(printer, finalBuilder.ToArray());
 
-                await Write(res, new { status = "printed" });
+                await Write(ctx, new { status = "printed" });
             }
             catch (Exception ex)
             {
-                res.StatusCode = 500;
-                await Write(res, new { error = "Error al imprimir: " + ex.Message });
+                ctx.Response.StatusCode = 500;
+                await Write(ctx, new { error = "Error al imprimir: " + ex.Message });
             }
         }
 
-        private async Task HandlePrintTicket(string body, HttpListenerResponse res)
+        private async Task HandlePrintTicket(string body, HttpContext ctx)
         {
             JsonDocument json;
             try { json = JsonDocument.Parse(body); }
             catch
             {
-                res.StatusCode = 400;
-                await Write(res, new { error = "JSON inválido" });
+                ctx.Response.StatusCode = 400;
+                await Write(ctx, new { error = "JSON inválido" });
                 return;
             }
 
@@ -348,12 +364,12 @@ namespace PrintAgent
             {
                 var printer = _printerManager.GetPreferredPrinter();
                 RawPrinterHelper.SendBytesToPrinter(printer, bytes.ToArray());
-                await Write(res, new { status = "printed" });
+                await Write(ctx, new { status = "printed" });
             }
             catch (Exception ex)
             {
-                res.StatusCode = 500;
-                await Write(res, new { error = ex.Message });
+                ctx.Response.StatusCode = 500;
+                await Write(ctx, new { error = ex.Message });
             }
         }
 
@@ -378,7 +394,7 @@ namespace PrintAgent
             public List<string>? footer_lines { get; set; }
         }
 
-        private async Task HandlePrintTicketGdi(string body, HttpListenerResponse res)
+        private async Task HandlePrintTicketGdi(string body, HttpContext ctx)
         {
             TicketPayload? payload;
             try
@@ -390,15 +406,15 @@ namespace PrintAgent
             }
             catch
             {
-                res.StatusCode = 400;
-                await Write(res, new { error = "JSON inválido" });
+                ctx.Response.StatusCode = 400;
+                await Write(ctx, new { error = "JSON inválido" });
                 return;
             }
 
             if (payload == null || payload.items == null)
             {
-                res.StatusCode = 400;
-                await Write(res, new { error = "Payload vacío" });
+                ctx.Response.StatusCode = 400;
+                await Write(ctx, new { error = "Payload vacío" });
                 return;
             }
 
@@ -447,8 +463,8 @@ namespace PrintAgent
             string printer = _printerManager.GetPreferredPrinter();
             if (string.IsNullOrWhiteSpace(printer))
             {
-                res.StatusCode = 500;
-                await Write(res, new { error = "No hay impresora preferida configurada" });
+                ctx.Response.StatusCode = 500;
+                await Write(ctx, new { error = "No hay impresora preferida configurada" });
                 return;
             }
 
@@ -589,12 +605,12 @@ namespace PrintAgent
 
                 doc.Print();
 
-                await Write(res, new { status = "printed_gdi" });
+                await Write(ctx, new { status = "printed_gdi" });
             }
             catch (Exception ex)
             {
-                res.StatusCode = 500;
-                await Write(res, new { error = ex.Message });
+                ctx.Response.StatusCode = 500;
+                await Write(ctx, new { error = ex.Message });
             }
             finally
             {
@@ -610,40 +626,15 @@ namespace PrintAgent
             RawPrinterHelper.SendBytesToPrinter(printer, bytes);
         }
 
-        private async Task Handle(HttpListenerContext ctx)
-        {
-            Interlocked.Increment(ref _activeRequests);
-            try
-            {
-                await HandleCore(ctx);
-            }
-            finally
-            {
-                Interlocked.Decrement(ref _activeRequests);
-            }
-        }
-
-        private async Task HandleCore(HttpListenerContext ctx)
+        private async Task HandleCore(HttpContext ctx)
         {
             var req = ctx.Request;
-            var res = ctx.Response;
-
-            res.AddHeader("Access-Control-Allow-Origin", "*");
-            res.AddHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-            res.AddHeader("Access-Control-Allow-Headers", "Content-Type");
-
-            if (req.HttpMethod == "OPTIONS")
-            {
-                res.StatusCode = 204;
-                res.Close();
-                return;
-            }
 
             try
             {
-                if (req.Url.AbsolutePath == "/printers" && req.HttpMethod == "GET")
+                if (req.Path == "/printers" && req.Method == "GET")
                 {
-                    await Write(res, new
+                    await Write(ctx, new
                     {
                         defaultPrinter = _printerManager.GetDefaultPrinter(),
                         preferredPrinter = _printerManager.GetPreferredPrinter(),
@@ -653,23 +644,23 @@ namespace PrintAgent
                     return;
                 }
 
-                if (req.Url.AbsolutePath == "/config" && req.HttpMethod == "POST")
+                if (req.Path == "/config" && req.Method == "POST")
                 {
-                    using var sr = new StreamReader(req.InputStream, req.ContentEncoding);
+                    using var sr = new StreamReader(req.Body, Encoding.UTF8);
                     var body = await sr.ReadToEndAsync();
                     var json = JsonDocument.Parse(body);
                     if (json.RootElement.TryGetProperty("printer", out var pr))
                         _printerManager.SetPreferredPrinter(pr.GetString() ?? "");
-                    await Write(res, new { status = "ok" });
+                    await Write(ctx, new { status = "ok" });
                     return;
                 }
 
-                bool isText = req.Url.AbsolutePath is "/print" or "/print_text";
-                bool isZpl = req.Url.AbsolutePath == "/print_zpl";
+                bool isText = req.Path == "/print" || req.Path == "/print_text";
+                bool isZpl = req.Path == "/print_zpl";
 
-                if (req.HttpMethod == "POST" && (isText || isZpl))
+                if (req.Method == "POST" && (isText || isZpl))
                 {
-                    using var sr = new StreamReader(req.InputStream, req.ContentEncoding);
+                    using var sr = new StreamReader(req.Body, Encoding.UTF8);
                     var body = await sr.ReadToEndAsync();
 
                     var json = JsonDocument.Parse(body);
@@ -679,8 +670,8 @@ namespace PrintAgent
                         if (!json.RootElement.TryGetProperty("valores", out var arr) ||
                             arr.ValueKind != JsonValueKind.Array || arr.GetArrayLength() == 0)
                         {
-                            res.StatusCode = 400;
-                            await Write(res, new { error = "Falta arreglo 'valores' con codigo_barra" });
+                            ctx.Response.StatusCode = 400;
+                            await Write(ctx, new { error = "Falta arreglo 'valores' con codigo_barra" });
                             return;
                         }
 
@@ -763,13 +754,13 @@ namespace PrintAgent
 
                         if (agregadas == 0)
                         {
-                            res.StatusCode = 400;
-                            await Write(res, new { error = "Ningún item con 'codigo_barra' válido" });
+                            ctx.Response.StatusCode = 400;
+                            await Write(ctx, new { error = "Ningún item con 'codigo_barra' válido" });
                             return;
                         }
 
                         _queue.Add(new PrintJob(JobKind.Zpl, sb.ToString()));
-                        await Write(res, new { status = "queued", count = agregadas });
+                        await Write(ctx, new { status = "queued", count = agregadas });
                         return;
                     }
 
@@ -777,8 +768,8 @@ namespace PrintAgent
                     {
                         if (!json.RootElement.TryGetProperty("text", out var dataEl))
                         {
-                            res.StatusCode = 400;
-                            await Write(res, new { error = "Falta campo 'text'" });
+                            ctx.Response.StatusCode = 400;
+                            await Write(ctx, new { error = "Falta campo 'text'" });
                             return;
                         }
 
@@ -787,48 +778,47 @@ namespace PrintAgent
                         try
                         {
                             SendRawText(text + "\n\n" + "\x1D\x56\x41\x00"); // texto crudo + corte
-                            await Write(res, new { status = "printed_with_cut" });
+                            await Write(ctx, new { status = "printed_with_cut" });
                         }
                         catch (Exception ex)
                         {
-                            res.StatusCode = 500;
-                            await Write(res, new { error = "Error al imprimir: " + ex.Message });
+                            ctx.Response.StatusCode = 500;
+                            await Write(ctx, new { error = "Error al imprimir: " + ex.Message });
                         }
                         return;
                     }
 
                 }
 
-                if (req.Url.AbsolutePath == "/admin")
+                if (req.Path == "/admin")
                 {
-                    await HandleAdmin(req, res);
+                    await HandleAdmin(req, ctx);
                     return;
                 }
 
-                if (req.Url.AbsolutePath == "/")
+                if (req.Path == "/")
                 {
-                    await Write(res, new { status = "ok" });
+                    await Write(ctx, new { status = "ok" });
                     return;
                 }
 
-                res.StatusCode = 404;
-                await Write(res, new { error = "not-found" });
+                ctx.Response.StatusCode = 404;
+                await Write(ctx, new { error = "not-found" });
             }
             catch (Exception ex)
             {
-                res.StatusCode = 500;
-                await Write(res, new { error = ex.Message });
+                ctx.Response.StatusCode = 500;
+                await Write(ctx, new { error = ex.Message });
                 _logger.Error("Excepción: " + ex);
             }
-            finally { res.Close(); }
         }
 
-        private async Task HandleAdmin(HttpListenerRequest req, HttpListenerResponse res)
+        private async Task HandleAdmin(HttpRequest req, HttpContext ctx)
         {
-            if (req.HttpMethod == "GET")
+            if (req.Method == "GET")
             {
-                bool wantsJson = req.AcceptTypes?.Contains("application/json") == true
-                    || (req.QueryString["format"]?.ToLowerInvariant() == "json");
+                bool wantsJson = req.Headers.Accept.Any(a => a != null && a.Contains("application/json"))
+                    || (req.Query["format"].ToString().ToLowerInvariant() == "json");
 
                 string rawHost = _prefix.Replace("http://", "").Replace("https://", "").Split(':')[0];
                 string portStr = _prefix.TrimEnd('/').Split(':').LastOrDefault() ?? "5000";
@@ -836,7 +826,7 @@ namespace PrintAgent
 
                 if (wantsJson)
                 {
-                    await Write(res, new
+                    await Write(ctx, new
                     {
                         host = displayHost,
                         port = int.TryParse(portStr, out var p) ? p : 5000,
@@ -845,7 +835,7 @@ namespace PrintAgent
                     return;
                 }
 
-                var msg = req.QueryString["saved"] == "1" ? "<div class=\"msg ok\">✔ Config saved. Server restarted.</div>" : "";
+                var msg = req.Query["saved"] == "1" ? "<div class=\"msg ok\">✔ Config saved. Server restarted.</div>" : "";
 
                 var html = $@"<!DOCTYPE html>
 <html lang=""es"">
@@ -883,13 +873,13 @@ namespace PrintAgent
 </div>
 </body>
 </html>";
-                await WriteHtml(res, html);
+                await WriteHtml(ctx, html);
                 return;
             }
 
-            if (req.HttpMethod == "POST")
+            if (req.Method == "POST")
             {
-                using var sr = new StreamReader(req.InputStream, req.ContentEncoding);
+                using var sr = new StreamReader(req.Body, Encoding.UTF8);
                 var body = await sr.ReadToEndAsync();
 
                 string host;
@@ -909,8 +899,8 @@ namespace PrintAgent
                     if (port <= 0 || port > 65535) port = 5000;
                 }
 
-                bool wantsJson = req.AcceptTypes?.Contains("application/json") == true
-                    || (req.QueryString["format"]?.ToLowerInvariant() == "json");
+                bool wantsJson = req.Headers.Accept.Any(a => a != null && a.Contains("application/json"))
+                    || (req.Query["format"].ToString().ToLowerInvariant() == "json");
 
                 try
                 {
@@ -918,12 +908,12 @@ namespace PrintAgent
 
                     if (wantsJson)
                     {
-                        await Write(res, new { status = "ok", message = "Config saved. Restarting...", prefix = newConfig.Prefix });
+                        await Write(ctx, new { status = "ok", message = "Config saved. Restarting...", prefix = newConfig.Prefix });
                     }
                     else
                     {
-                        res.StatusCode = 302;
-                        res.Headers.Add("Location", "/admin?saved=1");
+                        ctx.Response.StatusCode = 302;
+                        ctx.Response.Headers.Location = "/admin?saved=1";
                     }
 
                     _ = Task.Run(async () =>
@@ -937,20 +927,20 @@ namespace PrintAgent
                 {
                     if (wantsJson)
                     {
-                        res.StatusCode = 500;
-                        await Write(res, new { error = ex.Message });
+                        ctx.Response.StatusCode = 500;
+                        await Write(ctx, new { error = ex.Message });
                     }
                     else
                     {
                         var errHtml = $"<!DOCTYPE html><html lang=\"es\"><head><meta charset=\"UTF-8\"><title>PrintAgent</title></head><body style=\"font-family:sans-serif;margin:2em\"><div class=\"msg err\" style=\"background:#f8d7da;color:#721c24;padding:12px;border-radius:4px\"><strong>Error:</strong> {ex.Message}</div><a href=\"/admin\">← Back</a></body></html>";
-                        await WriteHtml(res, errHtml);
+                        await WriteHtml(ctx, errHtml);
                     }
                 }
                 return;
             }
 
-            res.StatusCode = 405;
-            await Write(res, new { error = "method-not-allowed" });
+            ctx.Response.StatusCode = 405;
+            await Write(ctx, new { error = "method-not-allowed" });
         }
 
         private static Dictionary<string, string> ParseFormData(string body)
@@ -968,23 +958,21 @@ namespace PrintAgent
             return result;
         }
 
-        private static async Task WriteHtml(HttpListenerResponse res, string html)
+        private static async Task WriteHtml(HttpContext ctx, string html)
         {
             var buf = Encoding.UTF8.GetBytes(html);
-            res.ContentType = "text/html; charset=utf-8";
-            res.ContentEncoding = Encoding.UTF8;
-            res.ContentLength64 = buf.Length;
-            await res.OutputStream.WriteAsync(buf);
+            ctx.Response.ContentType = "text/html; charset=utf-8";
+            ctx.Response.ContentLength = buf.Length;
+            await ctx.Response.Body.WriteAsync(buf);
         }
 
-        private static async Task Write(HttpListenerResponse res, object obj)
+        private static async Task Write(HttpContext ctx, object obj)
         {
             var json = JsonSerializer.Serialize(obj);
             var buf = Encoding.UTF8.GetBytes(json);
-            res.ContentType = "application/json";
-            res.ContentEncoding = Encoding.UTF8;
-            res.ContentLength64 = buf.Length;
-            await res.OutputStream.WriteAsync(buf);
+            ctx.Response.ContentType = "application/json";
+            ctx.Response.ContentLength = buf.Length;
+            await ctx.Response.Body.WriteAsync(buf);
         }
     }
 }
