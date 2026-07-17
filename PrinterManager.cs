@@ -41,10 +41,12 @@ namespace PrintAgent
 
         public string GetPreferredPrinter() => _preferredPrinter ?? GetDefaultPrinter();
 
-        public void PrintText(string text)
+        public void PrintText(string text, string? printerOverride = null)
         {
             var doc = new PrintDocument();
-            doc.PrinterSettings.PrinterName = GetPreferredPrinter();
+            doc.PrinterSettings.PrinterName = string.IsNullOrWhiteSpace(printerOverride)
+                ? GetPreferredPrinter()
+                : printerOverride;
             doc.PrintPage += (s, e) =>
             {
                 e.Graphics.DrawString(text, new System.Drawing.Font("Consolas", 10),
@@ -53,11 +55,14 @@ namespace PrintAgent
             doc.Print();
         }
 
-        public void PrintZpl(string zpl)
+        public void PrintZpl(string zpl, string? printerOverride = null)
         {
             if (!zpl.EndsWith("\r\n")) zpl += "\r\n";
             var bytes = Encoding.UTF8.GetBytes(zpl);
-            RawPrinterHelper.SendBytesToPrinter(GetPreferredPrinter(), bytes);
+            var printer = string.IsNullOrWhiteSpace(printerOverride)
+                ? GetPreferredPrinter()
+                : printerOverride;
+            RawPrinterHelper.SendBytesToPrinter(printer, bytes);
         }
 
 

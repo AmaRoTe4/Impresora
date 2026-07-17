@@ -60,10 +60,10 @@ namespace PrintAgent
                     switch (job.Kind)
                     {
                         case JobKind.Text:
-                            mgr.PrintText(job.Payload);
+                            mgr.PrintText(job.Payload, job.Printer);
                             break;
                         case JobKind.Zpl:
-                            mgr.PrintZpl(job.Payload);
+                            mgr.PrintZpl(job.Payload, job.Printer);
                             break;
                     }
                     logger.Info($"Job {job.Kind} impreso.");
@@ -76,6 +76,6 @@ namespace PrintAgent
         }
     }
 
-    public record PrintJob(JobKind Kind, string Payload);
+    public record PrintJob(JobKind Kind, string Payload, string? Printer = null);
     public enum JobKind { Text, Zpl }
 }

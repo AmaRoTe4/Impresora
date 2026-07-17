@@ -619,12 +619,19 @@ namespace PrintAgent
             }
         }
 
-        private void SendRawText(string text)
+        private void SendRawText(string text, string? printerOverride = null)
         {
-            var printer = _printerManager.GetPreferredPrinter();
+            var printer = string.IsNullOrWhiteSpace(printerOverride)
+                ? _printerManager.GetPreferredPrinter()
+                : printerOverride;
             var bytes = Encoding.GetEncoding("UTF-8").GetBytes(text);
             RawPrinterHelper.SendBytesToPrinter(printer, bytes);
         }
+
+        private static string? GetRequestedPrinter(JsonDocument json) =>
+            json.RootElement.TryGetProperty("printer", out var pr) && pr.ValueKind == JsonValueKind.String
+                ? pr.GetString()
+                : null;
 
         private async Task HandleCore(HttpContext ctx)
         {
@@ -664,6 +671,15 @@ namespace PrintAgent
                     var body = await sr.ReadToEndAsync();
 
                     var json = JsonDocument.Parse(body);
+
+                    string? requestedPrinter = GetRequestedPrinter(json);
+                    if (!string.IsNullOrWhiteSpace(requestedPrinter) &&
+                        !_printerManager.GetInstalledPrinters().Contains(requestedPrinter))
+                    {
+                        ctx.Response.StatusCode = 400;
+                        await Write(ctx, new { error = $"Impresora '{requestedPrinter}' no encontrada." });
+                        return;
+                    }
 
                     if (isZpl)
                     {
@@ -759,7 +775,7 @@ namespace PrintAgent
                             return;
                         }
 
-                        _queue.Add(new PrintJob(JobKind.Zpl, sb.ToString()));
+                        _queue.Add(new PrintJob(JobKind.Zpl, sb.ToString(), requestedPrinter));
                         await Write(ctx, new { status = "queued", count = agregadas });
                         return;
                     }
@@ -777,7 +793,7 @@ namespace PrintAgent
 
                         try
                         {
-                            SendRawText(text + "\n\n" + "\x1D\x56\x41\x00"); // texto crudo + corte
+                            SendRawText(text + "\n\n" + "\x1D\x56\x41\x00", requestedPrinter); // texto crudo + corte
                             await Write(ctx, new { status = "printed_with_cut" });
                         }
                         catch (Exception ex)
