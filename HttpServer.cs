@@ -664,8 +664,9 @@ namespace PrintAgent
 
                 bool isText = req.Path == "/print" || req.Path == "/print_text";
                 bool isZpl = req.Path == "/print_zpl";
+                bool isZplGeneric = req.Path == "/print_zpl_generic";
 
-                if (req.Method == "POST" && (isText || isZpl))
+                if (req.Method == "POST" && (isText || isZpl || isZplGeneric))
                 {
                     using var sr = new StreamReader(req.Body, Encoding.UTF8);
                     var body = await sr.ReadToEndAsync();
@@ -678,6 +679,42 @@ namespace PrintAgent
                     {
                         ctx.Response.StatusCode = 400;
                         await Write(ctx, new { error = $"Impresora '{requestedPrinter}' no encontrada." });
+                        return;
+                    }
+
+                    if (isZplGeneric)
+                    {
+                        string zpl = json.RootElement.TryGetProperty("zpl", out var zplEl) ? (zplEl.GetString() ?? "") : "";
+
+                        if (json.RootElement.TryGetProperty("zpl_list", out var zplListEl) &&
+                            zplListEl.ValueKind == JsonValueKind.Array &&
+                            zplListEl.GetArrayLength() > 0)
+                        {
+                            var sbList = new StringBuilder();
+                            foreach (var item in zplListEl.EnumerateArray())
+                            {
+                                if (item.ValueKind == JsonValueKind.String)
+                                {
+                                    var frag = item.GetString();
+                                    if (!string.IsNullOrWhiteSpace(frag))
+                                        sbList.Append(frag);
+                                }
+                            }
+
+                            var combined = sbList.ToString();
+                            if (!string.IsNullOrWhiteSpace(combined))
+                                zpl = combined;
+                        }
+
+                        if (string.IsNullOrWhiteSpace(zpl))
+                        {
+                            ctx.Response.StatusCode = 400;
+                            await Write(ctx, new { error = "Falta campo 'zpl' (o 'zpl_list' vacío)" });
+                            return;
+                        }
+
+                        _queue.Add(new PrintJob(JobKind.Zpl, zpl, requestedPrinter));
+                        await Write(ctx, new { status = "queued", printer = requestedPrinter });
                         return;
                     }
 
