@@ -17,7 +17,7 @@ Cada PC corre su propia instancia de PrintAgent, escuchando en localhost (o en s
 
 - **.NET 8** (`net8.0-windows`), proyecto `Microsoft.NET.Sdk.WindowsDesktop`.
 - **WinForms habilitado** (`UseWindowsForms=true`) — no hay ventanas de UI hoy, se usa solo por las APIs de `System.Drawing.Printing`/GDI+ (`PrintDocument`, `Image`, `Bitmap`, `Font`) para renderizar e imprimir.
-- **`System.Net.HttpListener`** — servidor HTTP nativo, sin ASP.NET Core ni Kestrel.
+- **Kestrel (`WebApplication`, ASP.NET Core)** — servidor HTTP embebido (`HttpServer.cs`). Bindea por socket, así que no necesita `netsh http add urlacl` para escuchar en una IP de LAN. (Versiones anteriores usaban `HttpListener`.)
 - **Win32 `winspool.drv` vía P/Invoke** (`RawPrinterHelper.cs`) — impresión RAW real (`OpenPrinter`/`StartDocPrinter`/`WritePrinter`/...), manda bytes ZPL/ESC-POS directo a la cola de impresión de Windows con `DataType="RAW"`, sin que Windows intente interpretarlos.
 - **`System.Text.Json`** — único paquete NuGet explícito, para (de)serializar los bodies JSON.
 - Config propia hecha a mano: parser `.env`-like (`Config.cs`) + un JSON de config en `%ProgramData%\PrintAgent\config.json` (`PrinterManager.cs`). No usa `Microsoft.Extensions.Configuration` ni `appsettings.json`.
@@ -29,15 +29,21 @@ Program.cs (Main)
   ├─ PrinterManager   (enumera impresoras, guarda "impresora preferida")
   ├─ BlockingCollection<PrintJob>  (cola en memoria)
   ├─ PrintWorker (Task.Run)  → consume la cola, imprime Text/Zpl vía PrinterManager
-  └─ HttpServer.StartAsync() → HttpListener, loop while(true) aceptando requests
+  └─ HttpServer.StartAsync() → Kestrel (WebApplication), un único handler `HandleCore`
 
-HttpServer.Handle(ctx) despacha por ruta:
-  GET  /printers      → PrinterManager.GetInstalledPrinters() / GetDefaultPrinter() / GetPreferredPrinter()
-  POST /config         → PrinterManager.SetPreferredPrinter(nombre)
-  POST /print          } alias de /print_text
-  POST /print_text      → SendRawText(texto) → RawPrinterHelper.SendBytesToPrinter (impresión inmediata, no pasa por la cola)
-  POST /print_zpl      → arma ZPL (barcode EAN-8, layout fijo 203dpi) → encola PrintJob(Zpl) → lo imprime PrintWorker
+HttpServer.HandleCore(ctx) despacha por ruta:
+  GET  /                  → health check {"status":"ok"}
+  GET  /printers          → PrinterManager.GetInstalledPrinters() / GetDefaultPrinter() / GetPreferredPrinter()
+  POST /config            → PrinterManager.SetPreferredPrinter(nombre)
+  POST /print             } alias de /print_text
+  POST /print_text        → SendRawText(texto) → RawPrinterHelper.SendBytesToPrinter (impresión inmediata, no pasa por la cola)
+  POST /print_zpl         → arma ZPL (barcode EAN-8, layout fijo 203dpi) → encola PrintJob(Zpl) → lo imprime PrintWorker
+  POST /print_zpl_generic → toma `zpl` / `zpl_list` tal cual → encola PrintJob(Zpl) → lo imprime PrintWorker
+  GET/POST /admin         → HandleAdmin: ver/cambiar host y puerto y reiniciar el servidor
 ```
+
+Referencia completa de la API (campos, códigos de respuesta, endpoints eliminados): [`endpoint_documentation.md`](endpoint_documentation.md).
+Cruce con el frontend de TiendaWeb: [`INTEGRACION_TIENDAWEB.md`](INTEGRACION_TIENDAWEB.md).
 
 La impresión efectiva baja siempre a `RawPrinterHelper.SendBytesToPrinter(printerName, bytes)`, que abre la impresora de Windows por nombre y manda los bytes crudos (RAW) directo al spooler.
 
@@ -87,12 +93,25 @@ curl -X POST http://localhost:5000/print_text \
 ```
 
 ### `POST /print_zpl`
-Imprime etiquetas ZPL (barcode EAN-8, 203dpi, layout fijo pensado para banderas de 15x25mm).
+Imprime etiquetas ZPL (barcode EAN-8, 203dpi, layout fijo pensado para banderas de 15x25mm). Solo lee `codigo_barra` (últimos 6 dígitos + verificador); ignora `nombre` y `precio`.
 ```bash
 curl -X POST http://localhost:5000/print_zpl \
      -H "Content-Type: application/json" \
      -d "{\"valores\":[{\"codigo_barra\":\"12345678\"}]}"
 ```
+
+### `POST /print_zpl_generic`
+Encola ZPL ya armado por el cliente (`zpl`, o `zpl_list` para varias etiquetas en un solo trabajo). No lo interpreta ni lo modifica; lo usa TiendaWeb en modo "completa".
+```bash
+curl -X POST http://localhost:5000/print_zpl_generic \
+     -H "Content-Type: application/json" \
+     -d "{\"zpl_list\":[\"^XA^FO20,20^A0N,30,30^FDHOLA^FS^XZ\"],\"printer\":\"Zebra ZPL\"}"
+```
+
+### `GET /` y `GET|POST /admin`
+`/` es el health check. `/admin` muestra y cambia host y puerto (y reinicia el servidor). Detalle en [`endpoint_documentation.md`](endpoint_documentation.md).
+
+> `/print_zpl` y `/print_zpl_generic` responden `{"status":"queued"}` apenas encolan: no confirman que se haya impreso. Los errores de impresión quedan solo en el log.
 
 ## Código presente pero no conectado (hallazgo, sin resolver todavía)
 
@@ -103,6 +122,8 @@ En `HttpServer.cs` existen tres métodos completos que **no están en el dispatc
 - `HandlePrintTicketGdi` — el más completo: renderiza el mismo tipo de ticket pero vía GDI+ (`PrintDocument`), con logo, QR, alineación de columnas, fuente mono, y dispara el corte ESC/POS al terminar (`SendCutCommand`).
 
 Son candidatos naturales para un futuro `POST /print_ticket`, pero quedan documentados como "código muerto" hasta que se decida conectarlos o eliminarlos — no se tocan en este cambio.
+
+Historial: en la primera versión (`Impresora.zip`, commit `9d55ef8` del repo `Tools`) estaban expuestos como `/print_qr`, `/print/ticket` y `/print_ticket_gdi`, junto con `/print_zpl_raw`. Se quitaron del dispatcher. TiendaWeb no los usa (ver [`INTEGRACION_TIENDAWEB.md`](INTEGRACION_TIENDAWEB.md)).
 
 ## Roadmap (en progreso)
 
